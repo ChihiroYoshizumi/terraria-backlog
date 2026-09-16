@@ -339,6 +339,7 @@ Snapshot の検証は **リクエスト全体を拒否する validation** と **
 - JSON / Snapshot envelope の構造不正
 - `schemaVersion !== 1`
 - `requestId` が UUID でない
+- `recoveryPending` が指定されているが JSON boolean でない
 - `runtime.tshockVersion` と `runtime.terrariaVersion` が設定済み supported pair と一致しない
 - `world.key` が URL と一致しない
 - `world.key` が allowlist に存在しない
@@ -389,6 +390,15 @@ Adapter に Achievement Key、Registry 結果、Backlog Issue Key、Mapping 結�
 `notifications` は PHP が表示可否・文言・宛先を確定した結果である。Adapter は `message` を Registry 状態等から再解釈せず、`audience` と `playerNames` に従って表示するだけとする。
 
 通知が不要な Snapshot では `notifications` は空配列とする。Backlog 課題同期結果は Adapter へ返さず、PHP の構造化ログで診断する。
+
+復旧後の `periodic` / `manual` reconciliation が成功した場合は、§15.2 の条件に従い次の通知命令を1件だけ返す。`audience=server` は server console のみを意味し、ゲーム内の全体チャットには表示しない。`playerNames` は含めない。
+
+```json
+{
+  "audience": "server",
+  "message": "[Backlog] 復旧後の再同期が完了しました。"
+}
+```
 
 ---
 
@@ -456,6 +466,8 @@ Chest change / Quick Stack
 
 Periodic Snapshot は ACK recipient を持たず、Collection Change 起点の未送信 Snapshot を置き換えてはならない。
 
+失敗済みの Collection Change の Player 情報は引き継がない。復旧時の通知は §15.2 に従う server console 向け通知だけとする。
+
 ### 7.5 Manual Sync
 
 TShock に管理者向けコマンドを追加する。
@@ -474,6 +486,8 @@ terrariabacklog.sync
 
 Backlog の仕様や Mapping の解釈は C# 側で扱わない。
 
+障害後の manual reconciliation が成功しても、コマンド実行者や過去の操作 Player へ復旧 ACK を送らない。PHP が返した server console 向けの固定通知のみを表示する。
+
 ### 7.6 ゲームループを待たせない / Snapshot coalescing
 
 Terraria API / Chest state の読み取りは安全なゲームスレッド上で Snapshot DTO にコピーする。HTTP はその DTO をバックグラウンドで送る。
@@ -483,10 +497,10 @@ Terraria API / Chest state の読み取りは安全なゲームスレッド上�
 - `periodic` / `world_change` / `startup` の状態 Snapshot は、未送信同士なら最新状態へ coalesce してよい。
 - `collection_change` Snapshot は ACK routing 情報を持つため periodic 等で破棄しない。
 - Collection Change が連続する場合、最新 Chest state に更新しつつ `trigger.playerNames` を集合として保持・集約する。
-- Pending collection trigger は送信成功または失敗応答を受けるまで保持する。プロセス終了では失われてよい。
+- Pending collection trigger は送信成功、失敗応答、または通信失敗・タイムアウトの確定までメモリで保持し、その要求の終了時に破棄する。プロセス終了でも失われてよい。
 - メモリ上の未送信 Snapshot はプロセス終了で失われてよく、状態そのものは次回 reconciliation で再取得する。
 
-永続 Queue は作らない。プロセス終了で ACK routing 情報を失った場合、達成自体は再照合できても過去の操作 Player への ACK 再現は保証しない。
+永続 Queue は作らない。ACK context（操作 Player・通知宛先と要求の対応）はファイル・DB・Backlog・ログへ永続化しない。障害後の reconciliation は過去 Player を追跡・復元せず、達成の再照合と server console への復旧通知を行う。
 
 ---
 
@@ -768,7 +782,7 @@ Snapshot 処理の基本順序は以下とする。`reason=manual` を含め、�
 7. 作成/修復した対象 key だけ再取得して保存確認し、registryIndex を更新
 8. 完了済み Registry set と mappingIndex をメモリ上で照合
 9. 対応する攻略課題を Done Status へ更新
-10. Collection Change 起点で PHP が成功 ACK を決定した場合のみ notifications を生成
+10. §15 に従い、collection_change の操作Player向けACK、または復旧後 periodic/manual 成功時のserver console向け固定通知を生成
 11. Adapter へ notifications のみ返す
 ```
 
@@ -876,6 +890,10 @@ Boss event Hook は必須の正本ではない。Hook が取れなくても Peri
 
 不正 Item はその Item 自体の根拠としては使用しないが、同一 Snapshot の他の復旧根拠を無効化しない。
 
+### 14.3 復旧後通知
+
+障害後に `periodic` / `manual` reconciliation が成功した場合、PHP は §15.2 の server console 向け固定通知だけを生成する。過去 Player への Item ごとの ACK は再現しない。これは現在状態・Registry からの復旧を通知する経路であり、ACK context の保存・復元には依存しない。
+
 ---
 
 ## 15. ACK 設計
@@ -903,13 +921,28 @@ Adapter は Registry result や Achievement Key を受け取らず、Response �
 
 `collection_change` の `trigger.playerNames` に記録された Player を PHP が通知対象として選び、Response の `notifications[].playerNames` に入れる。同一 debounce window の複数 Player は重複排除する。
 
-Periodic reconciliation 等で操作 Player が不明な場合は、必要なら `audience=server` の通知を返せる。全体チャットへの繰り返し通知は行わない。
+障害後の `periodic` / `manual` reconciliation では、過去の操作 Player を追跡しない。復旧成功時は `audience=server` として **server console に `[Backlog] 復旧後の再同期が完了しました。` のみ**を通知する。Item 名・Player 名・取り出し許可文言を追加せず、Player 個別通知・全体チャット通知は生成しない。
+
+| 契機・結果 | 通知 |
+| --- | --- |
+| 通常の `collection_change` で Item Registry 保存確認成功 | 現在の `trigger.playerNames` の操作 Player へ Item ACK |
+| 障害後の `periodic` / `manual` が復旧成功 | server console 向け固定通知を1件 |
+| 復旧処理が失敗・成否不明・部分失敗 | 復旧完了通知なし。診断ログのみ |
+| 通常の `periodic` / `manual`、復旧通知後の正常周期 | 復旧完了通知なし |
+
+復旧成功とは、有効な達成候補の Registry 保存確認と、対象 Mapping の再照合・必要な課題更新がエラーなく完了した状態を指す。§6.4 により対象外として skip する不正 Item は処理失敗に含めない。通常の Item ACK は引き続き Registry 保存確認だけを条件とし、課題更新の成否とは分離する。
+
+障害の検知には、Player 情報を含まないワールド単位の消失可能なメモリ上の復旧待ちフラグを用いる。Adapter は通信失敗・非成功応答でこのフラグを立て、以後の `periodic` / `manual` Snapshot に `recoveryPending: true` を付ける（省略時は false）。PHP はこの値を通知契機のみに使い、実際の成功判定・宛先・文言を決定する。Adapter は復旧完了通知を受け取って console に表示したらフラグを解除する。未達・部分失敗では解除しない。
+
+このフラグも ACK context も永続化しない。Adapter 再起動でフラグを失った場合も状態の再照合は継続するが、過去の障害の識別と復旧通知の再現は保証しない。新しい `collection_change` の成功は現在の操作 Player へ通知し、復旧待ちフラグの解除は復旧 reconciliation の成功時に行う。
 
 ### 15.3 Partial failure
 
 同じ Chest に3 Item があり、2件成功・1件失敗した場合、PHP は成功した2 Item に対応する通知だけを生成してよい。Adapter は成功/失敗を再判定しない。
 
 失敗した Item は成功扱いにしない。
+
+この Item 単位の通知は `collection_change` に限る。復旧待ちの periodic/manual が部分失敗した場合は復旧完了通知を生成せず、PHP は再試行可能な非成功応答を返す。成功分の保存は維持し、次回 reconciliation で再確認する。
 
 物理重複 Registry が複数存在し、完了済みが0件で fail closed した場合も通知を生成しない。
 
@@ -979,7 +1012,7 @@ PHP は以下を構造化ログとして出力する。
 
 秘密情報は出力しない。
 
-Player Name は ACK 相関に必要な場合のみ扱い、Backlog Registry の必須属性にはしない。
+Player Name は現在の `collection_change` の ACK 相関に必要なメモリ内処理でのみ扱う。ACK context をログや Backlog Registry に保存せず、復旧待ちフラグにも Player 情報を含めない。
 
 代表 operation:
 
@@ -1009,13 +1042,15 @@ reconciliation.completed
 
 Adapter は HTTP Error をログに残すがゲームを停止させない。
 
-Collection Item に成功 ACK は出さない。次回 Snapshot で再試行する。
+Collection Item に成功 ACK は出さず、その要求の ACK context を破棄する。次回 Snapshot で再試行し、障害後の periodic/manual 成功時は §15.2 の固定文言を server console にのみ通知する。
 
 ### 18.2 Backlog が利用不能
 
 PHP は `503` 相当の処理結果を Adapter へ返す。
 
 ゲーム側は成功 ACK を出さない。
+
+過去 Player への通知待ちは保存しない。periodic/manual で復旧成功した場合の通知は §15.2 の server console 向け固定文言のみとする。
 
 Boss / World 状態は次回 Snapshot で再判定する。Item は Collection Chest に残っていれば再判定できる。既に Registry 保存済みなら Item が取り出されても後付け Mapping は可能。
 
@@ -1188,6 +1223,8 @@ PATCH /api/v2/issues/{issueKey}
 - unknown Record Type の拒否
 - Reopened Issue の再完了判定
 - Notification の生成条件
+- 通常の collection_change ACK と復旧後 periodic/manual の固定通知の分岐
+- 復旧完了通知は部分失敗・成否不明では生成しないこと
 
 ### 22.2 PHP Feature Test
 
@@ -1218,7 +1255,10 @@ Laravel HTTP Test + Backlog HTTP Fake を利用する。
 - unknown non-empty Record Type ignored
 - completed general issue ignored
 - Response に Achievement Key / Backlog Issue Key / Mapping 結果が含まれないこと
-- Registry 保存確認済み Item のみ `notifications` が生成されること
+- collection_change では Registry 保存確認済み Item のみ操作 Player 向け ACK が生成されること
+- 失敗した collection_change の後、recoveryPending=true の periodic/manual が成功すると server console 向け固定通知が1件だけ生成され、playerNames・ItemごとのACKを含まないこと
+- Registry 保存確認と必要な課題更新の一部が失敗した場合、復旧完了通知を生成しないこと
+- 通常の periodic/manual（recoveryPending省略またはfalse）では復旧完了通知を生成しないこと
 
 実 Backlog へ接続するテストは CI で実施しない。
 
@@ -1232,6 +1272,8 @@ Laravel HTTP Test + Backlog HTTP Fake を利用する。
 - `collectionChestName`
 - Item 値不正時の item-local skip contract
 - Response が notification-only であること
+- recoveryPending は省略可能な boolean で、省略時 false とすること
+- 復旧通知は audience=server、固定文言のみで playerNames を持たないこと
 
 の双方が同じ schema / contract に適合することを確認する。
 
@@ -1249,6 +1291,10 @@ C# Unit Test:
 - periodic Snapshot が collection ACK trigger を破棄しないこと
 - single-flight sender
 - Response の `notifications` を解釈せず指定宛先へ表示すること
+- audience=server は server console のみに表示され、Player・全体チャットには表示されないこと
+- 通信失敗・失敗応答で ACK context を破棄し、Player を含まない復旧待ちフラグだけをメモリに保持すること
+- 復旧通知の受信・表示後にフラグを解除し、後続の正常周期で繰り返し通知しないこと
+- プロセス再起動で ACK context と復旧待ちフラグが失われ、過去 Player を復元せず状態再照合を続けること
 - Achievement Key / Backlog Issue Key を扱う型やロジックが Adapter に存在しないこと
 
 TShock Hook そのものは、対応バージョンの実サーバーを使った Smoke Test を別途行う。
@@ -1262,6 +1308,8 @@ TShock Hook そのものは、対応バージョンの実サーバーを使っ�
 実 `TRAINING_YOSHIZUMI` を使う試験は CI ではなく手動 Acceptance とする。
 
 試験前に専用 Test Issue / Mapping を用意し、既存研修課題を誤更新しないことを確認する。
+
+通常納品で操作 Player に ACK が届くことを確認する。次に通信障害を発生させて納品し、アイテムを残して復旧する。periodic と manual をそれぞれ試し、復旧成功時に server console に `[Backlog] 復旧後の再同期が完了しました。` だけが表示され、過去 Player・コマンド実行者・全体チャットに復旧通知が届かないことを確認する。
 
 ---
 
@@ -1277,7 +1325,7 @@ TShock Hook そのものは、対応バージョンの実サーバーを使っ�
 | AC-06 | 7.5, 11, 12, 14 |
 | AC-07 | 11, 12 |
 | AC-08 | 7.2, 8, 14 |
-| AC-09 | 7.4, 13, 18 |
+| AC-09 | 7.4, 13, 14.3, 15.2, 18, 22 |
 | AC-10 | 12, 13, 14 |
 | AC-11 | 10.4, 10.5, 12 |
 | AC-12 | 10.4, 13.4 |
@@ -1345,6 +1393,10 @@ Design の段階でも以下を追加しない。
 | Chest event | dirty trigger として使用。差分を達成とはみなさない |
 | ACK trigger | collection Snapshot を periodic で破棄せず Player を集約 |
 | ACK 判定 | PHP の責務。Adapter は `notifications` をそのまま表示 |
+| 通常ACK | collection_change 成功時に現在の操作 Player へ通知 |
+| 復旧後通知 | periodic/manual の復旧成功時、server console に `[Backlog] 復旧後の再同期が完了しました。` のみ通知 |
+| ACK context | 永続化せず要求終了時に破棄。復旧時は過去 Player を追跡しない |
+| 復旧待ち | Playerを含まないメモリ上のフラグのみ。再起動後の通知再現は保証しない |
 | Reconciliation | startup + 60秒 periodic + manual。全て Registry / Mapping を再取得 |
 | 後付け Mapping | periodic または `/backlog sync` の manual cycle で検出・反映 |
 | Boss 判定 | 永続 state のみ |
