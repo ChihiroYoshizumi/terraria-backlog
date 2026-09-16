@@ -1,0 +1,1412 @@
+# Terraria × Backlog ワールド進捗管理システム 詳細設計
+
+状態: draft  
+更新日: 2026-09-16
+
+本書は [最上位仕様](spec.md) と [機能仕様](specs/README.md) を入力とする design 文書である。仕様で定義された振る舞いを変更せず、実装に必要な技術選定、責務分割、通信契約、Backlog 上の論理データモデル、再照合方式、エラー処理、テスト方針を確定する。
+
+## 1. 設計原則
+
+1. PHP を主実装とする。
+2. Terraria クライアントは Vanilla のままとし、TShock Dedicated Server のみを拡張する。
+3. C# Adapter はゲーム状態の観測と PHP への転送、PHP から返された通知の表示だけを担当する。
+4. 達成ルール、Achievement Key、Backlog Registry、Mapping、課題同期は PHP に集約する。
+5. アプリケーション専用 DB、永続キュー、Outbox は持たない。
+6. Backlog を Achievement Registry と Mapping の永続ストレージとして扱う。
+7. 復旧可能性は「現在の Terraria 状態」または「Backlog に保存済みの Registry」から再構成できる範囲に限定する。
+8. Backlog 障害や PHP 障害で Terraria のゲームループを待たせない。
+9. Backlog への書き込みは冪等になるよう、書き込み前後に現在状態を確認する。
+10. 不明な状態を成功として扱わない。推測で Registry や課題を更新しない。
+
+---
+
+## 2. 技術選定
+
+### 2.1 PHP Bridge
+
+| 項目 | 採用 |
+| --- | --- |
+| PHP | PHP 8.5 |
+| Framework | Laravel 13 |
+| HTTP Client | Laravel HTTP Client |
+| 永続 DB | 使用しない |
+| Queue | 永続 Queue は使用しない |
+| Session | 使用しない |
+| Cache | 正本にしない。必要な場合のみ消失可能なメモリキャッシュを利用 |
+| Lock | 同一ホスト上の全 PHP Worker で共有する OS file lock を利用 |
+| Logging | Laravel logging。構造化されたコンテキストを付与 |
+| Test | Pest / PHPUnit、HTTP fake |
+
+Laravel 13 を API と CLI の実行基盤として利用するが、Eloquent、Migration、DB Queue、DB Session はシステム成立に必要としない。
+
+MVP では以下を前提とする。
+
+```env
+QUEUE_CONNECTION=sync
+SESSION_DRIVER=array
+CACHE_STORE=array
+```
+
+これらは再起動時に失われてもよい情報にのみ利用する。
+
+### 2.2 TShock Adapter
+
+| 項目 | 採用 |
+| --- | --- |
+| 言語 | C# |
+| Runtime | 採用 TShock が要求する .NET Runtime |
+| 実装形態 | TShock Plugin |
+| 責務 | World State / Chest State の Snapshot 作成、PHP への非同期送信、PHP が決定したゲーム内通知の表示 |
+| Backlog API | 呼ばない |
+| Achievement 判定 | 行わない |
+| 永続化 | 行わない |
+
+### 2.3 バージョン互換性 Gate
+
+Terraria と TShock は対応バージョンが一致していることを起動・導入の前提とする。
+
+2026-09-16 時点では Terraria Desktop の最新リリースと TShock stable の対応 Terraria バージョンに差があるため、設計上「最新 Terraria なら必ず動作する」とは扱わない。
+
+MVP では次の3段階で fail closed にする。
+
+1. Adapter 起動時に runtime から Terraria version と TShock version を取得する。
+2. Adapter がビルド時に同梱した `SupportedVersionMatrix` と runtime の組み合わせを照合し、一致しない場合は Hook 登録・Snapshot 送信を開始しない。
+3. Snapshot に runtime version を含め、PHP も `TERRARIA_SUPPORTED_RUNTIME` 設定と一致しない Snapshot を `409` で拒否する。
+
+Snapshot で送る例:
+
+```json
+{
+  "runtime": {
+    "adapterVersion": "0.1.0",
+    "tshockVersion": "6.1.0",
+    "terrariaVersion": "1.4.5.6"
+  }
+}
+```
+
+PHP 設定例:
+
+```env
+TERRARIA_SUPPORTED_RUNTIME=6.1.0:1.4.5.6
+```
+
+`php artisan terraria:doctor` はこの設定が空でないこと、実装が認識する組み合わせであることを検証する。実際のサーバー runtime は Adapter 起動 Gate と各 Snapshot の runtime validation で検証する。
+
+未対応の組み合わせでは運用を開始しない。将来 TShock stable が新しい Terraria バージョンへ対応したら、Adapter のビルドと Smoke Test を通した上で `SupportedVersionMatrix` と PHP 設定を更新する。
+
+参考:
+
+- TShock Releases: https://github.com/Pryaxis/TShock/releases
+- Terraria Desktop versions: https://terraria.wiki.gg/wiki/Desktop_version_history
+
+---
+
+## 3. 全体アーキテクチャ
+
+```text
+Vanilla Terraria Clients
+          |
+          v
+TShock Dedicated Server
+          |
+          | Terraria API / TShock hooks
+          v
+TerrariaBacklog.Adapter (C#)
+  - Runtime compatibility gate
+  - World Snapshot
+  - Collection Chest Snapshot
+  - Debounce / ACK recipient aggregation
+  - 非同期 HTTP Sender
+  - Notification Renderer
+          |
+          | POST /api/v1/worlds/{worldKey}/snapshots
+          v
+Terraria Backlog Bridge (Laravel / PHP)
+  - Request Validation
+  - Achievement Evaluation
+  - Snapshot-scoped Registry / Mapping index
+  - Registry Repository
+  - Backlog Sync
+  - Reconciliation
+  - ACK / Notification Decision
+          |
+          | Backlog API v2 / HTTPS
+          v
+TRAINING_YOSHIZUMI
+  - Registry 課題
+  - 攻略課題 + Mapping
+```
+
+### 3.1 責務境界
+
+#### Adapter が知ってよいもの
+
+- Terraria native world ID
+- Terraria / TShock runtime version
+- World の現在状態を表す生フラグ
+- Chest ID / 座標 / 名前 / Item ID / Stack
+- Collection Chest の設定名
+- 通知対象プレイヤー
+- PHP Bridge URL
+- Adapter 認証 Token
+- PHP から返された「誰に何を表示するか」という完成済み通知命令
+
+#### Adapter が知らないもの
+
+- `boss:moon_lord` 等の Achievement Key
+- Registry 登録結果の意味
+- Backlog Project Key
+- Backlog API Key
+- Backlog Custom Field ID
+- Backlog Issue Key
+- Backlog の完了 Status ID
+- Mapping / 課題同期結果
+
+#### PHP が知るもの
+
+- 生 World State と Achievement Key の対応
+- 対応 Terraria version の Item catalog
+- Backlog Registry の識別ルール
+- Mapping のカスタム属性
+- 対象 Project / Status / Issue Type / Priority
+- Registry 保存結果から ACK を出すかどうかの判定
+- 冪等処理・再試行ルール
+
+---
+
+## 4. リポジトリ構成
+
+実装フェーズでは次の構成を基本とする。
+
+```text
+terraria-backlog/
+├── docs/
+│   ├── spec.md
+│   ├── design.md
+│   └── specs/
+├── bridge/
+│   ├── app/
+│   │   ├── Application/
+│   │   ├── Domain/
+│   │   ├── Infrastructure/
+│   │   │   └── Backlog/
+│   │   └── Http/
+│   ├── config/
+│   ├── routes/
+│   └── tests/
+├── adapter/
+│   ├── TerrariaBacklog.Adapter.csproj
+│   ├── Hooks/
+│   ├── Snapshots/
+│   ├── Transport/
+│   └── Tests/
+├── contracts/
+│   ├── snapshot-v1.schema.json
+│   ├── examples/
+│   └── terraria/
+│       └── <version>/items.json
+└── scripts/
+```
+
+`contracts` は Adapter と PHP の境界仕様を共有するための正本とする。`contracts/terraria/<version>/items.json` は採用 Terraria version の Item ID と `maxStack` を保持する version-pinned catalog とし、PHP の入力検証に利用する。
+
+---
+
+## 5. ワールド識別
+
+### 5.1 World Key
+
+Adapter は Terraria の `Main.worldID` を native ID として取得できる。TShock 本体も `Main.worldID` をワールドごとの識別に利用しているため、通常のワールドではこれを利用する。
+
+既定の `world_key` は次の形式とする。
+
+```text
+terraria:<Main.worldID>
+```
+
+例:
+
+```text
+terraria:123456789
+```
+
+ただし `.wld` のコピーは native world ID を引き継ぐ可能性があるため、コピーを別ワールドとして運用する場合は Adapter 設定の `WorldKeyOverride` を必須とする。
+
+```json
+{
+  "WorldKeyOverride": "terraria:fusic-multiplayer-2026"
+}
+```
+
+### 5.2 PHP 側の許可
+
+PHP は受信 payload の値から任意のワールドを信用しない。
+
+環境変数または設定で許可する world key を明示する。
+
+```env
+TERRARIA_ALLOWED_WORLD_KEYS=terraria:123456789
+```
+
+リクエスト URL、payload の `world.key`、許可リストの3つが一致しない場合は `403` とする。
+
+---
+
+## 6. Adapter → PHP Snapshot Contract
+
+### 6.1 Endpoint
+
+```http
+POST /api/v1/worlds/{worldKey}/snapshots
+Authorization: Bearer <adapter-token>
+Content-Type: application/json
+```
+
+Adapter Token は Backlog API Key と別の秘密情報とする。
+
+### 6.2 Request
+
+```json
+{
+  "schemaVersion": 1,
+  "requestId": "0199f136-9e36-7f41-b148-e5b4f384a321",
+  "reason": "collection_change",
+  "observedAt": "2026-09-16T10:00:00+09:00",
+  "runtime": {
+    "adapterVersion": "0.1.0",
+    "tshockVersion": "6.1.0",
+    "terrariaVersion": "1.4.5.6"
+  },
+  "world": {
+    "key": "terraria:123456789",
+    "terrariaWorldId": 123456789,
+    "name": "Fusic World"
+  },
+  "collectionChestName": "BACKLOG_COLLECTION",
+  "flags": {
+    "downedBoss1": true,
+    "downedBoss3": true,
+    "hardMode": false,
+    "downedMechBoss1": false,
+    "downedMechBoss2": false,
+    "downedMechBoss3": false,
+    "downedPlantBoss": false,
+    "downedGolemBoss": false,
+    "downedAncientCultist": false,
+    "downedMoonlord": false
+  },
+  "collectionChests": [
+    {
+      "x": 120,
+      "y": 340,
+      "name": "BACKLOG_COLLECTION",
+      "items": [
+        {
+          "type": 1326,
+          "stack": 1,
+          "name": "Rod of Discord"
+        }
+      ]
+    }
+  ],
+  "trigger": {
+    "playerNames": ["player1"]
+  }
+}
+```
+
+### 6.3 `reason`
+
+以下のみ許可する。
+
+- `startup`
+- `periodic`
+- `collection_change`
+- `world_change`
+- `manual`
+
+PHP の達成判定は `reason` に依存させない。`reason` は診断、ACK 表示、観測契機の把握にのみ利用する。
+
+### 6.4 Validation
+
+Snapshot の検証は **リクエスト全体を拒否する validation** と **Item 単位で無視する validation** に分ける。
+
+#### リクエスト全体を拒否する validation
+
+以下は Snapshot 全体を信頼できないため reject する。
+
+- JSON / Snapshot envelope の構造不正
+- `schemaVersion !== 1`
+- `requestId` が UUID でない
+- `recoveryPending` が指定されているが JSON boolean でない
+- `runtime.tshockVersion` と `runtime.terrariaVersion` が設定済み supported pair と一致しない
+- `world.key` が URL と一致しない
+- `world.key` が allowlist に存在しない
+- `terrariaWorldId` が整数でない
+- `collectionChestName` が PHP 設定の `TERRARIA_COLLECTION_CHEST_NAME` と一致しない
+- `collectionChests` が配列でない、Chest 要素が object でない等のコンテナ構造不正
+- `collectionChests[].name` が `collectionChestName` と一致しない
+- `flags` の構造不正
+- Request Body / Chest / Item 件数が設定上限を超える
+- Adapter が任意 URL、Project Key、Backlog Issue Key 等の禁止 field を外部操作先として指定しようとする
+
+これらは `4xx` とし、Registry / Mapping の処理を開始しない。
+
+#### Item 単位で無視する validation
+
+Snapshot envelope と World State が正しい場合、個々の Item 値だけが不正でも Snapshot 全体は失敗させない。
+
+各 Item について PHP は型 coercion を行わず、次をすべて満たす場合だけ Item Achievement 候補にする。
+
+- Item entry が object である
+- `type` が JSON integer
+- `type` が採用 Terraria version の Item catalog に存在する
+- `stack` が JSON integer
+- `1 <= stack <= catalog[type].maxStack`
+
+不正な Item は `item.invalid_skipped` として world/chest 座標・理由を診断ログへ残し、その Item だけを無視する。**不正 Item があっても、同じ Snapshot の有効 Item、Boss / World State の Registry 補完、既存 Registry と Mapping の再照合は継続する。**
+
+未知の top-level field は将来互換のため読み飛ばしてよいが、未知の `schemaVersion` は reject する。
+
+### 6.5 Response
+
+Adapter に Achievement Key、Registry 結果、Backlog Issue Key、Mapping 結果を返さない。PHP は Registry 保存結果まで解釈したうえで、Adapter がそのまま表示できる通知命令だけを返す。
+
+```json
+{
+  "requestId": "0199f136-9e36-7f41-b148-e5b4f384a321",
+  "worldKey": "terraria:123456789",
+  "notifications": [
+    {
+      "audience": "players",
+      "playerNames": ["player1"],
+      "message": "[Backlog] Rod of Discord を登録しました。取り出してOKです。"
+    }
+  ]
+}
+```
+
+`notifications` は PHP が表示可否・文言・宛先を確定した結果である。Adapter は `message` を Registry 状態等から再解釈せず、`audience` と `playerNames` に従って表示するだけとする。
+
+通知が不要な Snapshot では `notifications` は空配列とする。Backlog 課題同期結果は Adapter へ返さず、PHP の構造化ログで診断する。
+
+復旧後の `periodic` / `manual` reconciliation が成功した場合は、§15.2 の条件に従い次の通知命令を1件だけ返す。`audience=server` は server console のみを意味し、ゲーム内の全体チャットには表示しない。`playerNames` は含めない。
+
+```json
+{
+  "audience": "server",
+  "message": "[Backlog] 復旧後の再同期が完了しました。"
+}
+```
+
+---
+
+## 7. Adapter のイベント処理
+
+### 7.1 Adapter 設定
+
+Adapter 設定には少なくとも次を持つ。
+
+```json
+{
+  "BridgeUrl": "http://127.0.0.1:8080",
+  "WorldKeyOverride": null,
+  "CollectionChestName": "BACKLOG_COLLECTION",
+  "ReconciliationIntervalSeconds": 60
+}
+```
+
+`CollectionChestName` は設定可能で、既定値だけが `BACKLOG_COLLECTION` である。起動スキャン、変更イベントの対象判定、Quick Stack 後の再取得、periodic reconciliation のすべてでこの設定値を使う。固定文字列を監視条件に埋め込まない。
+
+### 7.2 起動時
+
+`GamePostInitialize` 相当のワールド初期化完了後に compatibility gate を通し、Full Snapshot を作成して PHP へ送る。
+
+起動 Snapshot には、
+
+- runtime version
+- World identity
+- 対象 World State 全項目
+- `CollectionChestName` と完全一致する全 Collection Chest の現在内容
+
+を含める。
+
+### 7.3 Collection Chest
+
+TShock の `GetDataHandlers.ChestItemChange` を変更契機として利用する。
+
+Quick Stack は通常の Slot Change と別経路になる可能性があり、TShock 本体でも `OTAPI.Hooks.Chest.QuickStack` が別途扱われている。このため Adapter は両方を「設定された Collection Chest の状態が汚れた可能性がある」という trigger として扱う。
+
+重要なのは、イベント引数の差分を Achievement とみなさないことである。
+
+```text
+Chest change / Quick Stack
+        |
+        v
+設定名と一致する Chest を dirty とする
+        |
+        v
+約 500ms debounce
+        |
+        v
+サーバー状態から Chest 全スロットを再取得
+        |
+        v
+最新 Snapshot を送信
+```
+
+同じ debounce window 内で複数 Player が対象 Chest を変更した場合、`trigger.playerNames` に重複排除して集約する。
+
+### 7.4 Periodic Reconciliation
+
+イベント取りこぼし、PHP 再起動、後付け Mapping を補完するため、Adapter は60秒ごとに Full Snapshot を送る。
+
+60秒は設計上の既定値であり設定可能とする。
+
+Periodic Snapshot は ACK recipient を持たず、Collection Change 起点の未送信 Snapshot を置き換えてはならない。
+
+失敗済みの Collection Change の Player 情報は引き継がない。復旧時の通知は §15.2 に従う server console 向け通知だけとする。
+
+### 7.5 Manual Sync
+
+TShock に管理者向けコマンドを追加する。
+
+```text
+/backlog sync
+```
+
+必要 Permission:
+
+```text
+terrariabacklog.sync
+```
+
+コマンドは `reason=manual` の Full Snapshot を即時送信する。PHP は通常の Snapshot 処理をその場で最後まで実行するため、**現在 World State / Collection Chest の再判定に加えて、その時点の Registry と Mapping を再取得し、後付け Mapping も即時に課題へ反映する。**
+
+Backlog の仕様や Mapping の解釈は C# 側で扱わない。
+
+障害後の manual reconciliation が成功しても、コマンド実行者や過去の操作 Player へ復旧 ACK を送らない。PHP が返した server console 向けの固定通知のみを表示する。
+
+### 7.6 ゲームループを待たせない / Snapshot coalescing
+
+Terraria API / Chest state の読み取りは安全なゲームスレッド上で Snapshot DTO にコピーする。HTTP はその DTO をバックグラウンドで送る。
+
+- ゲームスレッドで Backlog/PHP 通信を待たない。
+- HTTP 送信は single-flight とし、同時に複数本走らせない。
+- `periodic` / `world_change` / `startup` の状態 Snapshot は、未送信同士なら最新状態へ coalesce してよい。
+- `collection_change` Snapshot は ACK routing 情報を持つため periodic 等で破棄しない。
+- Collection Change が連続する場合、最新 Chest state に更新しつつ `trigger.playerNames` を集合として保持・集約する。
+- Pending collection trigger は送信成功、失敗応答、または通信失敗・タイムアウトの確定までメモリで保持し、その要求の終了時に破棄する。プロセス終了でも失われてよい。
+- メモリ上の未送信 Snapshot はプロセス終了で失われてよく、状態そのものは次回 reconciliation で再取得する。
+
+永続 Queue は作らない。ACK context（操作 Player・通知宛先と要求の対応）はファイル・DB・Backlog・ログへ永続化しない。障害後の reconciliation は過去 Player を追跡・復元せず、達成の再照合と server console への復旧通知を行う。
+
+---
+
+## 8. Achievement Evaluation
+
+Adapter は raw state を送るだけとし、PHP が Achievement Key を決定する。
+
+### 8.1 MVP の World Progress 対応表
+
+| Raw state | Achievement Key | MVP | 理由 |
+| --- | --- | --- | --- |
+| `downedBoss1` | `boss:eye_of_cthulhu` | 対象 | 永続 state から再判定可能 |
+| `downedBoss3` | `boss:skeletron` | 対象 | 永続 state から再判定可能 |
+| `hardMode` | `world:hardmode` | 対象 | 永続 state から再判定可能 |
+| `downedMechBoss1` | `boss:the_destroyer` | 対象 | 永続 state から再判定可能 |
+| `downedMechBoss2` | `boss:the_twins` | 対象 | 永続 state から再判定可能 |
+| `downedMechBoss3` | `boss:skeletron_prime` | 対象 | 永続 state から再判定可能 |
+| `downedPlantBoss` | `boss:plantera` | 対象 | 永続 state から再判定可能 |
+| `downedGolemBoss` | `boss:golem` | 対象 | 永続 state から再判定可能 |
+| `downedAncientCultist` | `boss:lunatic_cultist` | 対象 | 永続 state から再判定可能 |
+| `downedMoonlord` | `boss:moon_lord` | 対象 | 永続 state から再判定可能 |
+
+### 8.2 MVP で独立 Achievement にしないもの
+
+#### Eater of Worlds / Brain of Cthulhu
+
+Terraria の `downedBoss2` は Eater of Worlds と Brain of Cthulhu を独立して表さないため、どちらを倒したかを推測しない。MVP の個別 Achievement にはしない。
+
+#### Wall of Flesh
+
+MVP では `world:hardmode` を再判定可能な進行として扱う。Wall of Flesh 撃破を独立して証明する永続 state を確認できない構成では、`boss:wall_of_flesh` を `hardMode` から推測して登録しない。
+
+Wall of Flesh の撃破イベントそのものを一過性イベントとして捕捉して永続保存する方式は、本仕様の非スコープである。
+
+### 8.3 Item Achievement
+
+Collection Chest の Item は §6.4 の version-pinned Item catalog validation を Item 単位で通過したものだけを評価する。
+
+```text
+catalog.contains(item.type)
+&& item.type is integer
+&& item.stack is integer
+&& 1 <= item.stack <= catalog[item.type].maxStack
+```
+
+を満たす Item ごとに、
+
+```text
+item:<item.type>
+```
+
+を生成する。同一 Item が複数 Chest / Slot にあっても1つの Achievement として扱う。
+
+不正 Item は Achievement を生成しないが、Snapshot 全体の Boss / World / Mapping 再照合は停止しない。
+
+---
+
+## 9. Backlog を仮想 DB として扱う設計
+
+### 9.1 対象 Project
+
+MVP は既存の Backlog Project:
+
+```text
+TRAINING_YOSHIZUMI
+```
+
+のみを操作する。Adapter から Project Key を指定させない。
+
+`BACKLOG_PROJECT_KEY` は可変な一般設定ではなく、MVP の safety assertion として `TRAINING_YOSHIZUMI` 以外を許可しない。
+
+### 9.2 必要な Custom Field
+
+Text 型 Custom Field を3つ必要とする。
+
+| 表示名 | 用途 | Registry | 攻略課題 |
+| --- | --- | --- | --- |
+| `Terraria Record Type` | Registry と一般課題の区別 | `registry` | 空欄 |
+| `Terraria World Key` | World Mapping | 必須 | Mapping 時必須 |
+| `Terraria Key` | Achievement Mapping | 必須 | Mapping 時必須 |
+
+`Achievement Type` 専用 field は作らず、`Terraria Key` の prefix から導出する。
+
+Custom Field の作成は Project Admin 権限が必要になるため、MVP の PHP アプリケーションが自動作成しない。導入時に Backlog 上で作成し、Custom Field ID を PHP 設定へ渡す。
+
+### 9.3 PHP 設定
+
+例:
+
+```env
+BACKLOG_BASE_URL=https://fusic.backlog.jp
+BACKLOG_API_KEY=***
+BACKLOG_PROJECT_KEY=TRAINING_YOSHIZUMI
+BACKLOG_REGISTRY_RECORD_TYPE_FIELD_ID=123456
+BACKLOG_WORLD_KEY_FIELD_ID=123457
+BACKLOG_ACHIEVEMENT_KEY_FIELD_ID=123458
+BACKLOG_DONE_STATUS_ID=4
+BACKLOG_REGISTRY_ISSUE_TYPE_ID=1
+BACKLOG_REGISTRY_PRIORITY_ID=3
+TERRARIA_COLLECTION_CHEST_NAME=BACKLOG_COLLECTION
+```
+
+ID は実環境を取得して設定する。ドキュメント中の例を固定値として実装しない。
+
+### 9.4 起動前検証
+
+Laravel Command を提供する。
+
+```text
+php artisan terraria:doctor
+```
+
+`doctor` は read-only とし、次を確認する。
+
+- Backlog API 認証
+- `BACKLOG_PROJECT_KEY === TRAINING_YOSHIZUMI` であること。異なる値なら Project の実在有無に関係なく失敗
+- `TRAINING_YOSHIZUMI` の Project ID を取得できること
+- 3 Custom Field の ID / 型 / Project 所属
+- Done Status ID が対象 Project で有効
+- Registry Issue Type ID が有効
+- Registry Priority ID が有効
+- World allowlist
+- Collection Chest 名設定
+- `TERRARIA_SUPPORTED_RUNTIME` が実装の compatibility matrix に存在すること
+- version-pinned Item catalog が対象 Terraria version 用に存在すること
+
+不足していても Project 構造を自動変更しない。`doctor` が失敗する設定で運用開始しない。
+
+---
+
+## 10. Registry Repository
+
+### 10.1 Registry 課題
+
+Registry は Backlog 上の通常の Issue を専用 Record として利用する。
+
+例:
+
+```text
+件名:
+[Terraria Registry] Rod of Discord
+
+Terraria Record Type:
+registry
+
+Terraria World Key:
+terraria:123456789
+
+Terraria Key:
+item:1326
+
+状態:
+完了
+```
+
+説明には診断用 metadata を記録してよい。登録日時を正確な過去の入手日時とは扱わない。
+
+### 10.2 論理 Primary Key
+
+Registry の論理 Primary Key は次である。
+
+```text
+(Project, Terraria World Key, Terraria Key)
+```
+
+MVP の Project は `TRAINING_YOSHIZUMI` 固定である。Backlog は DB の UNIQUE 制約を提供しないため、一意性は PHP の処理で維持する。
+
+### 10.3 Snapshot-scoped Registry Index
+
+Snapshot の Achievement ごとに全ページ検索を繰り返さない。
+
+Snapshot 処理の開始時に、対象 Project / World の Registry 候補を一度だけ全ページ取得し、PHP 内で次の index を構築する。
+
+```text
+registryIndex[achievement_key] = RegistryIssue[]
+```
+
+API query 自体を `TRAINING_YOSHIZUMI` の Project ID に限定し、PHP 上の final match でも次をすべて完全一致確認する。
+
+1. Issue の Project ID が `doctor` で解決した `TRAINING_YOSHIZUMI` の Project ID と一致
+2. `Terraria Record Type === registry`
+3. `Terraria World Key === world_key`
+4. `Terraria Key === achievement_key`
+
+Backlog の文字列 filter を DB の exact lookup とみなさない。検索失敗は「0件」と扱わない。
+
+### 10.4 `ensureRegistered` と重複
+
+`ensureRegistered` は Snapshot-scoped `registryIndex` を受け取り、通常の判定では追加の全件検索を行わない。
+
+```text
+ensureRegistered(worldKey, achievement, registryIndex)
+    |
+    +-- exact Registry が0件
+    |       -> Registry Issue 作成
+    |       -> 完了状態へ更新
+    |       -> 作成した Issue の再取得または対象 key の限定再検索で確認
+    |       -> registryIndex を更新
+    |       -> registered / failed
+    |
+    +-- exact Registry が1件
+    |       +-- 完了済み -> already_registered
+    |       +-- 未完了   -> 完了へ更新 -> 再取得確認 -> registered / failed
+    |
+    +-- exact Registry が複数
+            -> warning
+            +-- 完了済みが1件以上
+            |       -> 論理上 already_registered
+            |       -> 自動削除・自動マージしない
+            +-- 完了済みが0件
+                    -> fail closed
+                    -> 新規作成しない
+                    -> 既存のどれも自動完了しない
+                    -> result = failed
+                    -> 管理者診断対象
+```
+
+複数 exact Registry で完了済みが0件の場合、どの物理 Issue を正本とするか安全に選べないため書き込みを止める。Collection Chest の成功 ACK も出さない。
+
+Backlog API の create/update 応答が timeout 等で不明になった場合、再作成する前に対象 key を限定して再検索する。
+
+### 10.5 競合制御
+
+MVP は PHP Bridge を単一ホストで運用する。PHP-FPM 等で複数 Worker が存在しても AC-11 を守るため、`world_key + achievement_key` 単位の **cross-process file lock を必須** とする。
+
+例:
+
+```text
+/var/lock/terraria-backlog/<sha256(world_key + achievement_key)>.lock
+```
+
+- `flock(LOCK_EX)` を使用する。
+- lock 範囲は「最新 Registry 確認 -> 必要な create/update -> 保存確認」まで全体を含む。
+- 同一ホスト上の全 Worker が同じ lock directory を共有する。
+- lock file の内容は正本ではなく、消えてもよい。
+- 複数ホストへ水平スケールする構成は MVP 非対応とし、shared distributed lock を導入するまでは禁止する。
+
+この lock と search-first を併用して重複を抑える。物理重複を完全に排除できない場合でも §10.4 の fail-closed 処理で誤更新を防ぐ。
+
+---
+
+## 11. Mapping Repository
+
+攻略課題は次をすべて満たす場合にのみ Mapping として扱う。
+
+- Issue の Project ID が `TRAINING_YOSHIZUMI` の解決済み Project ID と一致
+- `Terraria Record Type` が null / 空文字である
+- 課題が未完了
+- `Terraria World Key` が設定済み
+- `Terraria Key` が設定済み
+
+`Terraria Record Type === registry` は Registry として扱い Mapping から除外する。
+
+`Terraria Record Type` に `foo` 等の未知の非空値が入っている Issue は **攻略課題と推測せず無視**し、invalid record type として診断ログを残す。
+
+Mapping のない研修課題は無視する。World Key / Terraria Key の片方だけ設定されている場合も invalid mapping としてログに残すが更新しない。
+
+同一 Achievement に複数の攻略課題を対応させてよい。後付け Mapping は **次の Reconciliation で検出する。定期 Reconciliation だけでなく `/backlog sync` の manual Reconciliation でも同じ Mapping scan を実行し、その場で反映する。**
+
+Mapping も Snapshot 単位で対象 Project / World の未完了 Issue を一度取得し、PHP 内で Achievement Key ごとに index 化する。
+
+```text
+mappingIndex[achievement_key] = MappingIssue[]
+```
+
+---
+
+## 12. Backlog Sync
+
+Snapshot 処理の基本順序は以下とする。`reason=manual` を含め、どの Reconciliation 契機でも同じ処理順序を使う。
+
+```text
+1. Request envelope / world / runtime validation
+2. Collection Chest の Item を Item 単位で validation し、不正 Item は skip/log
+3. Snapshot -> 有効な Achievement 候補生成
+4. 対象 Project / World の Registry を一度取得して registryIndex を構築
+5. 対象 Project / World の未完了 Mapping 課題を一度取得して mappingIndex を構築
+6. 各 Achievement を registryIndex で評価し、必要な Registry だけ作成/修復
+7. 作成/修復した対象 key だけ再取得して保存確認し、registryIndex を更新
+8. 完了済み Registry set と mappingIndex をメモリ上で照合
+9. 対応する攻略課題を Done Status へ更新
+10. §15 に従い、collection_change の操作Player向けACK、または復旧後 periodic/manual 成功時のserver console向け固定通知を生成
+11. Adapter へ notifications のみ返す
+```
+
+Snapshot 内に Item が多数あっても、Registry / Mapping の全件ページングを Achievement ごとに繰り返さない。不正 Item があっても、その Item だけを候補から除外し、手順4以降の Registry / Mapping 再照合は継続する。
+
+### 12.1 冪等性
+
+課題更新前に現在状態を確認する。既に完了の場合は PATCH しない。
+
+完了済みの一般課題は Registry として取り込まず、コメント・本文・Mapping の補完も行わない。
+
+達成済み Mapping 課題を利用者が再オープンした場合は、次回 reconciliation（periodic / manual を含む）で再び完了させる。
+
+### 12.2 課題へのコメント
+
+MVP では自動コメントを追加しない。
+
+理由:
+
+- 再同期でコメントが増殖することを避ける。
+- 完了 Status が同期結果の正本で十分である。
+- 既存研修課題への変更範囲を最小化する。
+
+---
+
+## 13. Backlog API Client
+
+### 13.1 認証
+
+API Key は Nulab 公式 Backlog API の `Backlog-API-Key` request header を使用する。
+
+```http
+Backlog-API-Key: <api-key>
+```
+
+Backlog API は API Key を `apiKey` query parameter または `Backlog-API-Key` header で送信できる。MVP では URL / access log に秘密情報が残るリスクを減らすため header を採用する。
+
+公式仕様:
+
+https://developer.nulab.com/ja/docs/backlog/auth/
+
+OAuth を将来採用する場合は `Authorization: Bearer <access-token>` を使用するが、MVP の API Key と混同しない。
+
+### 13.2 Request 方針
+
+- Issue List query は必ず対象 `TRAINING_YOSHIZUMI` の Project ID へ限定する。
+- Backlog API 呼び出しは1ユーザー/API Keyにつき直列に行う。
+- Issue List は `count=100` を使用し、必要なら `offset` で全ページ取得する。
+- API Filter 後も PHP で Project ID と Custom Field を exact match する。
+- Request timeout を設定する。
+
+既定値:
+
+```text
+connect timeout: 2 seconds
+request timeout: 8 seconds
+```
+
+### 13.3 Rate Limit
+
+Backlog の `X-RateLimit-*` Header をログ用 metadata として読み取る。
+
+`429 Too Many Requests` ではゲーム側を長時間待たせない。
+
+- 当該処理を `failed/retriable` とする。
+- 成功 ACK を返さない。
+- `X-RateLimit-Reset` を診断ログに残す。
+- 次の periodic / manual reconciliation で再評価する。
+
+必要に応じて短い transient retry を1回まで実施してよいが、永続 retry queue は作らない。
+
+### 13.4 5xx / Timeout
+
+Registry の存在確認ができなければ未登録と断定しない。
+
+Create / Update の結果が不明なら、次回検索で現在状態を確認する。
+
+---
+
+## 14. Reconciliation
+
+Reconciliation は独自の Achievement ルールを持たず、Snapshot 処理を再実行する仕組みとする。**startup / periodic / manual のいずれでも Registry と Mapping を現時点から再取得するため、後付け Mapping は `/backlog sync` でも即時に反映される。**
+
+### 14.1 契機
+
+| 契機 | 実行元 |
+| --- | --- |
+| Server startup | Adapter |
+| 60秒 periodic | Adapter |
+| Chest change | Adapter |
+| World progress change | Adapter。取得可能な Hook は latency 改善用途 |
+| `/backlog sync` | 管理者。`reason=manual` の Full Snapshot を即時送信し、PHP が Registry / Mapping の再照合まで完了する |
+
+Boss event Hook は必須の正本ではない。Hook が取れなくても Periodic Snapshot で補完できる状態だけを対象にする。
+
+### 14.2 復旧可能範囲
+
+| 残っている根拠 | 復旧 |
+| --- | --- |
+| World flag | Boss / World Registry を作成可能 |
+| Collection Chest 内の有効 Item | Item Registry を作成可能 |
+| Registry | Item が取り出されていても Mapping 課題を同期可能 |
+| Mapping + Registry | 後付け課題を periodic / manual Reconciliation で完了可能 |
+| 何も残っていない | 復元しない |
+
+不正 Item はその Item 自体の根拠としては使用しないが、同一 Snapshot の他の復旧根拠を無効化しない。
+
+### 14.3 復旧後通知
+
+障害後に `periodic` / `manual` reconciliation が成功した場合、PHP は §15.2 の server console 向け固定通知だけを生成する。過去 Player への Item ごとの ACK は再現しない。これは現在状態・Registry からの復旧を通知する経路であり、ACK context の保存・復元には依存しない。
+
+---
+
+## 15. ACK 設計
+
+Collection Chest の ACK は「Registry が Backlog へ保存済みであること」だけを意味する。
+
+```text
+[Backlog] Rod of Discord を登録しました。取り出してOKです。
+```
+
+課題 Mapping が存在することや課題完了成功は ACK 条件に含めない。
+
+### 15.1 PHP と Adapter の責務
+
+PHP が以下をすべて決定する。
+
+- どの Item の Registry 保存が確認できたか
+- ACK を出してよいか
+- 誰へ通知するか
+- 表示文言
+
+Adapter は Registry result や Achievement Key を受け取らず、Response の `notifications` をそのまま表示するだけとする。これにより Achievement / Backlog の解釈を C# に持ち込まない。
+
+### 15.2 宛先
+
+`collection_change` の `trigger.playerNames` に記録された Player を PHP が通知対象として選び、Response の `notifications[].playerNames` に入れる。同一 debounce window の複数 Player は重複排除する。
+
+障害後の `periodic` / `manual` reconciliation では、過去の操作 Player を追跡しない。復旧成功時は `audience=server` として **server console に `[Backlog] 復旧後の再同期が完了しました。` のみ**を通知する。Item 名・Player 名・取り出し許可文言を追加せず、Player 個別通知・全体チャット通知は生成しない。
+
+| 契機・結果 | 通知 |
+| --- | --- |
+| 通常の `collection_change` で Item Registry 保存確認成功 | 現在の `trigger.playerNames` の操作 Player へ Item ACK |
+| 障害後の `periodic` / `manual` が復旧成功 | server console 向け固定通知を1件 |
+| 復旧処理が失敗・成否不明・部分失敗 | 復旧完了通知なし。診断ログのみ |
+| 通常の `periodic` / `manual`、復旧通知後の正常周期 | 復旧完了通知なし |
+
+復旧成功とは、有効な達成候補の Registry 保存確認と、対象 Mapping の再照合・必要な課題更新がエラーなく完了した状態を指す。§6.4 により対象外として skip する不正 Item は処理失敗に含めない。通常の Item ACK は引き続き Registry 保存確認だけを条件とし、課題更新の成否とは分離する。
+
+障害の検知には、Player 情報を含まないワールド単位の消失可能なメモリ上の復旧待ちフラグを用いる。Adapter は通信失敗・非成功応答でこのフラグを立て、以後の `periodic` / `manual` Snapshot に `recoveryPending: true` を付ける（省略時は false）。PHP はこの値を通知契機のみに使い、実際の成功判定・宛先・文言を決定する。Adapter は復旧完了通知を受け取って console に表示したらフラグを解除する。未達・部分失敗では解除しない。
+
+このフラグも ACK context も永続化しない。Adapter 再起動でフラグを失った場合も状態の再照合は継続するが、過去の障害の識別と復旧通知の再現は保証しない。新しい `collection_change` の成功は現在の操作 Player へ通知し、復旧待ちフラグの解除は復旧 reconciliation の成功時に行う。
+
+### 15.3 Partial failure
+
+同じ Chest に3 Item があり、2件成功・1件失敗した場合、PHP は成功した2 Item に対応する通知だけを生成してよい。Adapter は成功/失敗を再判定しない。
+
+失敗した Item は成功扱いにしない。
+
+この Item 単位の通知は `collection_change` に限る。復旧待ちの periodic/manual が部分失敗した場合は復旧完了通知を生成せず、PHP は再試行可能な非成功応答を返す。成功分の保存は維持し、次回 reconciliation で再確認する。
+
+物理重複 Registry が複数存在し、完了済みが0件で fail closed した場合も通知を生成しない。
+
+---
+
+## 16. Security
+
+### 16.1 Adapter → PHP
+
+同一ホストで運用する場合:
+
+- PHP は loopback で Listen してよい。
+- HTTP を許可する。
+- Bearer Token は必須。
+
+別ホスト・コンテナ Network の信頼境界を越える場合:
+
+- HTTPS を必須とする。
+- Bearer Token を必須とする。
+
+Snapshot は現在状態を再送する冪等データであるため、MVP では nonce/replay DB を導入しない。
+
+### 16.2 Backlog
+
+Backlog API Key は PHP Bridge のみが保持する。
+
+次へ渡してはならない。
+
+- Terraria Client
+- TShock Adapter
+- ゲーム内 Chat
+- Repository
+- Backlog Issue 本文
+- Application Log
+
+HTTP Client の request/exception logging では `Backlog-API-Key` を必ず redact する。
+
+### 16.3 Input trust
+
+Adapter Payload 内の以下を外部操作先として信用しない。
+
+- URL
+- Backlog Space
+- Project Key
+- Issue Key
+- Custom Field ID
+- Status ID
+
+これらは PHP 設定からのみ取得する。
+
+---
+
+## 17. Logging / Observability
+
+PHP は以下を構造化ログとして出力する。
+
+- `request_id`
+- `world_key`
+- `reason`
+- `achievement_key`
+- `registry_issue_key`
+- `mapping_issue_key`
+- `operation`
+- `result`
+- `http_status`
+- `error_type`
+
+秘密情報は出力しない。
+
+Player Name は現在の `collection_change` の ACK 相関に必要なメモリ内処理でのみ扱う。ACK context をログや Backlog Registry に保存せず、復旧待ちフラグにも Player 情報を含めない。
+
+代表 operation:
+
+```text
+snapshot.received
+snapshot.runtime_rejected
+item.invalid_skipped
+registry.index_loaded
+registry.lookup
+registry.created
+registry.exists
+registry.duplicate_failed
+registry.failed
+mapping.index_loaded
+mapping.invalid_record_type
+issue.completed
+issue.completion_failed
+notification.generated
+reconciliation.completed
+```
+
+---
+
+## 18. Error Handling
+
+### 18.1 PHP Bridge が利用不能
+
+Adapter は HTTP Error をログに残すがゲームを停止させない。
+
+Collection Item に成功 ACK は出さず、その要求の ACK context を破棄する。次回 Snapshot で再試行し、障害後の periodic/manual 成功時は §15.2 の固定文言を server console にのみ通知する。
+
+### 18.2 Backlog が利用不能
+
+PHP は `503` 相当の処理結果を Adapter へ返す。
+
+ゲーム側は成功 ACK を出さない。
+
+過去 Player への通知待ちは保存しない。periodic/manual で復旧成功した場合の通知は §15.2 の server console 向け固定文言のみとする。
+
+Boss / World 状態は次回 Snapshot で再判定する。Item は Collection Chest に残っていれば再判定できる。既に Registry 保存済みなら Item が取り出されても後付け Mapping は可能。
+
+### 18.3 Item 値不正
+
+Snapshot envelope / world / runtime が正しければ、不正 Item は Item 単位で skip/log する。
+
+- 不正 Item から Registry は作らない。
+- 不正 Item の成功通知は作らない。
+- 同じ Snapshot の有効 Item、Boss / World Registry、Registry→Mapping 同期は継続する。
+
+### 18.4 Custom Field / Project / Runtime 設定不備
+
+誤った課題更新を避けるため fail closed とする。
+
+- `BACKLOG_PROJECT_KEY !== TRAINING_YOSHIZUMI`
+- Project ID / Custom Field / Status 等の設定不整合
+- unsupported Terraria / TShock runtime
+- Item catalog 不在
+
+のいずれかでは同期を開始しない。
+
+`terraria:doctor` が失敗する状態では運用開始しない。Runtime mismatch は Adapter 起動時にも拒否し、PHP は各 Snapshot でも再検証する。
+
+---
+
+## 19. Domain / Application Component
+
+PHP 側は少なくとも次の責務へ分割する。
+
+```text
+Domain/
+  AchievementKey
+  WorldKey
+  Achievement
+  WorldSnapshot
+  ItemCatalog
+
+Application/
+  ProcessWorldSnapshot
+  EvaluateAchievements
+  RegisterAchievements
+  SynchronizeMappedIssues
+  BuildNotifications
+
+Infrastructure/Backlog/
+  BacklogClient
+  RegistryRepository
+  MappingRepository
+  ProjectConfigurationRepository
+```
+
+### 19.1 Interface
+
+概念 Interface:
+
+```php
+interface RegistryRepository
+{
+    public function loadIndex(WorldKey $world): RegistryIndex;
+
+    public function ensureRegistered(
+        WorldKey $world,
+        Achievement $achievement,
+        RegistryIndex $index,
+    ): RegistryResult;
+}
+```
+
+```php
+interface MappingRepository
+{
+    public function loadIncompleteIndex(WorldKey $world): MappingIndex;
+
+    public function complete(Mapping $mapping): CompletionResult;
+}
+```
+
+Domain/Application 層は、Registry の実体が Backlog Issue であることへ直接依存しない。
+
+将来 Registry 保存先を変更する場合も Interface の実装を差し替えられる構造とする。ただし MVP では Backlog 以外の永続ストアを実装しない。
+
+---
+
+## 20. Backlog Search / Pagination Algorithm
+
+Registry / Mapping 共通で、Backlog API が返す1ページだけを全件とみなさない。
+
+Snapshot ごとに Repository 種別ごとの scan を原則1回だけ行う。`reason=manual` でも同じ scan を実行する。
+
+```text
+offset = 0
+count = 100
+
+loop:
+    issues = GET /api/v2/issues(projectId[]=TRAINING_YOSHIZUMI_ID, ..., offset, count)
+    collect issues
+
+    if issues.count < count:
+        break
+
+    offset += count
+```
+
+取得後に Project ID と Custom Field を PHP で完全一致比較し、`registryIndex` / `mappingIndex` を構築する。
+
+新規 Registry 作成後の保存確認だけは、作成した Issue の GET または対象 Achievement Key を限定した再検索を許可する。Achievement ごとの全 Project scan は行わない。
+
+検索障害は「該当0件」と扱わない。
+
+---
+
+## 21. Backlog Write Sequence
+
+### Registry 新規作成
+
+```text
+cross-process lock 取得
+  |
+  v
+lock 内で最新 exact Registry を再確認
+  |
+  +-- 存在 -> §10.4 に従う
+  |
+  +-- 不在
+        POST /api/v2/issues
+          -> Registry Issue作成
+
+        PATCH /api/v2/issues/{issueKey}
+          statusId = configured done status
+
+        GET issue または対象 key の限定再検索
+          -> Project + custom fields + done を確認
+
+lock 解放
+```
+
+途中で失敗して未完了 Registry が残っても、次回 `ensureRegistered` がそれを検出して完了へ進める。ただし同じ exact Registry が複数存在する場合は §10.4 の重複規則を優先する。
+
+### Mapping 課題
+
+```text
+GET current issue
+  -> Project + 未完了 + exact Mapping + Record Type空欄を再確認
+
+PATCH /api/v2/issues/{issueKey}
+  statusId = configured done status
+```
+
+更新前に既に完了していた場合は何もしない。
+
+---
+
+## 22. Testing Strategy
+
+### 22.1 PHP Unit Test
+
+対象:
+
+- Raw flag -> Achievement Key 変換
+- Item ID が version catalog に存在すること
+- `stack` が integer かつ `1..maxStack` であること
+- 不正 Item を skip して他 Achievement 評価を継続すること
+- Eater/Brain・Wall of Flesh を推測しないこと
+- World Key exact match
+- Project ID exact match
+- Registry duplicate 判定
+- 複数 exact Registry + 完了0件の fail closed
+- Mapping validation
+- unknown Record Type の拒否
+- Reopened Issue の再完了判定
+- Notification の生成条件
+- 通常の collection_change ACK と復旧後 periodic/manual の固定通知の分岐
+- 復旧完了通知は部分失敗・成否不明では生成しないこと
+
+### 22.2 PHP Feature Test
+
+Laravel HTTP Test + Backlog HTTP Fake を利用する。
+
+最低限:
+
+- Snapshot endpoint authentication
+- runtime version mismatch rejection
+- invalid world rejection
+- configurable Collection Chest name validation
+- unknown Item ID / string / float / zero / maxStack超過の Item は item 単位で skip されること
+- 不正 Item と同居する Boss / World Registry が処理されること
+- 不正 Item と同居していても Registry→Mapping 再照合が実行されること
+- `BACKLOG_PROJECT_KEY !== TRAINING_YOSHIZUMI` の doctor failure
+- Registry query が Project ID に限定されること
+- Registry none -> create -> done -> verify
+- Registry exists -> no create
+- create timeout -> target key re-search
+- incomplete Registry recovery
+- duplicate incomplete Registry -> no write / failed
+- Snapshot 内に複数 Achievement があっても full Registry / Mapping scan が各1回であること
+- Backlog 429 / 5xx
+- post-hoc Mapping が periodic reconciliation で反映されること
+- post-hoc Mapping が `/backlog sync` の manual reconciliation で即時反映されること
+- same Achievement -> multiple issues
+- mapping-less general issue ignored
+- unknown non-empty Record Type ignored
+- completed general issue ignored
+- Response に Achievement Key / Backlog Issue Key / Mapping 結果が含まれないこと
+- collection_change では Registry 保存確認済み Item のみ操作 Player 向け ACK が生成されること
+- 失敗した collection_change の後、recoveryPending=true の periodic/manual が成功すると server console 向け固定通知が1件だけ生成され、playerNames・ItemごとのACKを含まないこと
+- Registry 保存確認と必要な課題更新の一部が失敗した場合、復旧完了通知を生成しないこと
+- 通常の periodic/manual（recoveryPending省略またはfalse）では復旧完了通知を生成しないこと
+
+実 Backlog へ接続するテストは CI で実施しない。
+
+### 22.3 Contract Test
+
+`contracts/examples` に Snapshot fixture を置き、
+
+- C# serializer output
+- PHP request envelope validation
+- runtime version fields
+- `collectionChestName`
+- Item 値不正時の item-local skip contract
+- Response が notification-only であること
+- recoveryPending は省略可能な boolean で、省略時 false とすること
+- 復旧通知は audience=server、固定文言のみで playerNames を持たないこと
+
+の双方が同じ schema / contract に適合することを確認する。
+
+### 22.4 Adapter Test
+
+C# Unit Test:
+
+- runtime compatibility gate
+- Snapshot builder
+- `world_key` generation / override
+- configurable Collection Chest name filter
+- Chest state normalization
+- debounce
+- collection trigger player aggregation
+- periodic Snapshot が collection ACK trigger を破棄しないこと
+- single-flight sender
+- Response の `notifications` を解釈せず指定宛先へ表示すること
+- audience=server は server console のみに表示され、Player・全体チャットには表示されないこと
+- 通信失敗・失敗応答で ACK context を破棄し、Player を含まない復旧待ちフラグだけをメモリに保持すること
+- 復旧通知の受信・表示後にフラグを解除し、後続の正常周期で繰り返し通知しないこと
+- プロセス再起動で ACK context と復旧待ちフラグが失われ、過去 Player を復元せず状態再照合を続けること
+- Achievement Key / Backlog Issue Key を扱う型やロジックが Adapter に存在しないこと
+
+TShock Hook そのものは、対応バージョンの実サーバーを使った Smoke Test を別途行う。
+
+### 22.5 Concurrency Test
+
+同一 `world_key + achievement_key` に複数 PHP Worker 相当の並行リクエストを発生させ、shared file lock により lookup-create-verify が直列化されることを確認する。
+
+### 22.6 Manual Acceptance
+
+実 `TRAINING_YOSHIZUMI` を使う試験は CI ではなく手動 Acceptance とする。
+
+試験前に専用 Test Issue / Mapping を用意し、既存研修課題を誤更新しないことを確認する。
+
+通常納品で操作 Player に ACK が届くことを確認する。次に通信障害を発生させて納品し、アイテムを残して復旧する。periodic と manual をそれぞれ試し、復旧成功時に server console に `[Backlog] 復旧後の再同期が完了しました。` だけが表示され、過去 Player・コマンド実行者・全体チャットに復旧通知が届かないことを確認する。
+
+---
+
+## 23. Acceptance Criteria Traceability
+
+| AC | Design の主な対応箇所 |
+| --- | --- |
+| AC-01 | 2, 3, 7, 16 |
+| AC-02 | 2, 9, 10 |
+| AC-03 | 6, 8.3, 10, 15 |
+| AC-04 | 7.3, 8.3 |
+| AC-05 | 10, 15 |
+| AC-06 | 7.5, 11, 12, 14 |
+| AC-07 | 11, 12 |
+| AC-08 | 7.2, 8, 14 |
+| AC-09 | 7.4, 13, 14.3, 15.2, 18, 22 |
+| AC-10 | 12, 13, 14 |
+| AC-11 | 10.4, 10.5, 12 |
+| AC-12 | 10.4, 13.4 |
+| AC-13 | 5, 11 |
+| AC-14 | 11, 12 |
+| AC-15 | 11, 12 |
+| AC-16 | 6.4, 16, 17 |
+| AC-17 | 6.4, 8, 14, 18 |
+| AC-18 | 7.6, 13, 18 |
+| AC-19 | 9, 10.3, 11, 12 |
+
+---
+
+## 24. 実装前に確認する外部依存
+
+以下はコードを書き始める前に確認し、実値を設定する。
+
+1. 実運用時の Terraria と TShock stable の対応バージョン。
+2. 対応 TShock で `ChestItemChange`、Quick Stack Hook、World State field が利用できること。
+3. 対象 Terraria version の Item ID / maxStack catalog を生成・固定できること。
+4. `TRAINING_YOSHIZUMI` で Text Custom Field を3つ利用できる権限・プランであること。
+5. Custom Field ID、Done Status ID、Issue Type ID、Priority ID。
+6. Backlog API Key に対象課題の Read / Add / Update 権限があること。
+7. 実際の World で `Main.worldID` を取得し、コピー運用時に override が必要か確認すること。
+
+この確認で仕様を満たせない項目が見つかった場合、推測で代替実装せず spec / design の変更としてレビューする。
+
+---
+
+## 25. 実装しないもの
+
+Design の段階でも以下を追加しない。
+
+- SQLite / MySQL / PostgreSQL
+- Redis 等の永続 Queue
+- ローカル Achievement Event Store
+- 一過性イベントを救済する Outbox
+- Steam API
+- Player Inventory 監視
+- Backlog から Terraria への逆同期
+- Client MOD
+- tModLoader
+- 複数 Achievement の AND / OR Mapping
+- 自動 Backlog Project / Custom Field 作成
+- 未確認の Boss 撃破推測
+- 複数 PHP ホストでの水平スケール
+
+---
+
+## 26. 設計上の決定まとめ
+
+| 論点 | 決定 |
+| --- | --- |
+| 主実装 | PHP 8.5 / Laravel 13 |
+| Terraria 側 | TShock Plugin / C# |
+| C# の責務 | Snapshot取得・送信・PHP決定済み通知の表示のみ |
+| アプリ DB | なし |
+| 正本 | Terraria current state + Backlog Registry |
+| Mapping | Backlog Custom Field |
+| Registry | 同一 Backlog Project 内の専用 Issue |
+| 対象 Project | `TRAINING_YOSHIZUMI` 固定。doctor / query / final match で検証 |
+| World Key | `Main.worldID` ベース + override |
+| Item 判定 | version-pinned Item catalog + Collection Chest current state。値不正は item-local skip |
+| Collection Chest 名 | 設定可能。既定値 `BACKLOG_COLLECTION` |
+| Chest event | dirty trigger として使用。差分を達成とはみなさない |
+| ACK trigger | collection Snapshot を periodic で破棄せず Player を集約 |
+| ACK 判定 | PHP の責務。Adapter は `notifications` をそのまま表示 |
+| 通常ACK | collection_change 成功時に現在の操作 Player へ通知 |
+| 復旧後通知 | periodic/manual の復旧成功時、server console に `[Backlog] 復旧後の再同期が完了しました。` のみ通知 |
+| ACK context | 永続化せず要求終了時に破棄。復旧時は過去 Player を追跡しない |
+| 復旧待ち | Playerを含まないメモリ上のフラグのみ。再起動後の通知再現は保証しない |
+| Reconciliation | startup + 60秒 periodic + manual。全て Registry / Mapping を再取得 |
+| 後付け Mapping | periodic または `/backlog sync` の manual cycle で検出・反映 |
+| Boss 判定 | 永続 state のみ |
+| Wall of Flesh | 独立 Achievement は MVP 対象外。`world:hardmode` のみ |
+| Eater / Brain | 共通 flag のため個別 Achievement は MVP 対象外 |
+| Backlog API | `Backlog-API-Key` header、Project限定、pagination、exact filter |
+| API効率 | Snapshot単位で Registry / Mapping を1回 scan して index 化 |
+| Registry重複 | shared file lock + search-first。複数未完了重複は fail closed |
+| PHP concurrency | 同一ホスト全 Worker で cross-process `flock`。水平scale非対応 |
+| Runtime version | Adapter startup + PHP Snapshot validation の二重 Gate |
+| 障害復旧 | 再判定可能な current state / Registry のみ。不正 Item は他の再照合を止めない |
+
+この design を `split-tasks` の入力とし、実装タスクは仕様 AC と本書の節を参照できる形で分割する。
