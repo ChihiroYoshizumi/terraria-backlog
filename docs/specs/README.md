@@ -8,6 +8,7 @@
 - 各機能仕様はレビュー中の `draft`。上位仕様の変更提案は既存要件と分けて扱う。
 - PHP 主実装、薄い C# Adapter、アプリ専用 DB なし、Backlog 永続化の共通方針は上位仕様を参照する。
 - API 形式、クラス構成、ライブラリ選定、数値設定は詳細設計で決める。未決事項は各文書の末尾に記す。
+- 今回の対象は [TRAINING_YOSHIZUMI](https://fusic.backlog.jp/projects/TRAINING_YOSHIZUMI)。完了済み攻略・研修課題と Mapping のない一般課題は無視する。完了済み Registry は達成記録として参照する。
 - spec-driven-dev の後続工程では標準配置の `docs/specs/spec.md` ではなく、`docs/spec.md` と本索引を入力として指定する。
 
 ## 機能一覧と読む順序
@@ -60,6 +61,7 @@
 | AC-16 | operations-security | — |
 | AC-17 | reconciliation | collection-chest、world-progress |
 | AC-18 | operations-security | reconciliation |
+| AC-19 | backlog-mapping | backlog-sync、achievement-registry |
 
 ## 後続工程への引き継ぎ
 
