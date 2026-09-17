@@ -142,8 +142,8 @@ README または各ディレクトリの README に、最低限以下を記載�
 
 ## 実装状況
 
-- status: in_progress（実装・自動確認は完了。完了条件のうち手動 Smoke Test が未実施のため completed にしない）
-- 残作業: 下記「実機検証」の4項目（TShock Dedicated Server の起動 / Plugin ロードのコンソール確認 / World ロードと接続待ち / Vanilla クライアントからの接続）を実機で確認し、完了後に status を completed へ更新する
+- status: completed（実装・自動確認・実機 Smoke Test をすべて完了）
+- 対応バージョン: **Terraria 1.3.0.8 / TShock 4.3.13**（正本は `docs/design.md` §2.3）
 - 実施日: 2026-09-17（同日に対応バージョンを Terraria 1.4.5.6 / TShock 6.1.0 から **Terraria 1.3.0.8 / TShock 4.3.13** へ変更。理由と対応表は `docs/design.md` §2.3）
 - 実施内容:
   - `bridge/`: Laravel 13 / PHP 8.5, DB 非依存 (QUEUE_CONNECTION=sync / SESSION_DRIVER=array / CACHE_STORE=array)。`app/Domain`, `app/Application`, `app/Infrastructure/Backlog` を新設。`composer test` が DB_* 未設定でも成功することを確認済み。
@@ -151,7 +151,14 @@ README または各ディレクトリの README に、最低限以下を記載�
   - `contracts/`: `snapshot-v1.schema.json`（request）、`snapshot-response-v1.schema.json`（response, notification-only, additionalProperties:false）、`items-v1.schema.json`、`terraria/1.3.0.8/items.json`（プレースホルダー3件、Task 04 で拡張予定）。`npm run validate` で example が schema に適合し、response に禁止 field が無いことを確認済み。
   - `scripts/setup-tshock.sh` / `scripts/deploy-adapter.sh`: TShock 4.3.13 (for Terraria 1.3.0.8) の取得・展開・Adapter デプロイを自動化。TShock 4.3.13 は OS 別ビルドが無く単一 zip (`tshock_4.3.13.zip`) のため、OS 判定と `.tar` 展開分岐は削除した。実際に実行し、`.tshock-server/` への展開と `ServerPlugins/` への Plugin DLL 配置まで確認済み（gitignore 済み、コミットなし）。
   - README: root / `bridge/README.md` / `adapter/README.md` / `contracts/README.md` に install/test/build/deploy/validate コマンドと TShock 起動手順を記載。
-- 実機検証: **未実施**。本タスクの実行環境には Terraria クライアント・GUI・Mono のいずれも無いため、TShock Dedicated Server の実起動・コンソールでの Plugin ロード確認・Vanilla クライアントからの接続確認は行っていない。TShock 4.3.13 は .NET Framework 4.5 向けのため起動には Mono が必要で、手順（macOS / WSL(Ubuntu) それぞれの Mono 導入を含む）は `adapter/README.md` の「Mono のインストール」「手動 Smoke Test」に再現可能な形で記載し、開発者が実施できるようにした。クライアント側は Steam の Betas から 1.3.0.8 を選択してサーバーとバージョンを揃える。
+- 実機 Smoke Test（実施済み・全項目成功）: 実機を持つ開発者が `adapter/README.md`「手動 Smoke Test」の手順で実施した。
+  - 使用構成: Terraria **1.3.0.8** Vanilla client（Steam の Betas から 1.3.0.8 を選択） + TShock **4.3.13** Dedicated Server。
+  - TShock 4.3.13 Dedicated Server がローカルで起動することを確認。
+  - `TerrariaBacklog.Adapter` Plugin が Plugin としてロードされることをコンソールログで確認。
+  - World がロードされ、サーバーが接続待ち状態になることを確認。
+  - Vanilla Terraria 1.3.0.8 client から TShock Server へ接続成功。
+  - **client 側に tModLoader / 専用 client MOD は不要**であることを確認（AC-01 の Vanilla client 接続要件を満たす）。
+  - この結果により「完了条件」の TShock Dedicated Server 起動・Vanilla client 接続・Client MOD 非依存をすべて満たした。
 - 自動確認（実施済み・全て成功）:
   - `composer test`（bridge, DB 無し）
   - `dotnet build adapter/TerrariaBacklog.Adapter.csproj`
