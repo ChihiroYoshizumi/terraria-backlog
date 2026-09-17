@@ -63,6 +63,9 @@ final class SnapshotEnvelopeValidationTest extends SnapshotTestCase
             'observedAt not a date' => [['observedAt' => 'yesterday'], 'envelope.invalid_observed_at'],
             'observedAt without offset' => [['observedAt' => '2026-09-16T10:00:00'], 'envelope.invalid_observed_at'],
             'observedAt missing' => [['observedAt' => null], 'envelope.invalid_observed_at'],
+            // DateTimeImmutable は例外を投げず 2026-03-02 へ繰り上げ正規化してしまう。
+            'observedAt on a day that does not exist' => [['observedAt' => '2026-02-30T10:00:00+00:00'], 'envelope.invalid_observed_at'],
+            'observedAt on a non-leap Feb 29' => [['observedAt' => '2025-02-29T10:00:00+09:00'], 'envelope.invalid_observed_at'],
             'collectionChestName mismatch' => [['collectionChestName' => 'OTHER_CHEST'], 'collection_chest.name_mismatch'],
             'collectionChestName missing' => [['collectionChestName' => null], 'collection_chest.name_mismatch'],
             'chest name mismatch' => [['collectionChests.0.name' => 'OTHER_CHEST'], 'collection_chest.name_mismatch'],

@@ -204,10 +204,21 @@ final readonly class SnapshotRequestParser
         }
 
         try {
-            return new DateTimeImmutable($value);
+            $observedAt = new DateTimeImmutable($value);
         } catch (Exception) {
             throw $this->reject(SnapshotRejectionCode::InvalidObservedAt, 'observedAt is not a real date-time.');
         }
+
+        // `2026-02-30T10:00:00+00:00` のような暦法上存在しない日時は例外にならず、
+        // 2026-03-02 へ繰り上げ正規化される。警告として報告されるのでここで拾う。
+        // PHP 8.2 以降 getLastErrors() は「問題なし」のとき false を返す。
+        $errors = DateTimeImmutable::getLastErrors();
+
+        if ($errors !== false && (($errors['warning_count'] ?? 0) > 0 || ($errors['error_count'] ?? 0) > 0)) {
+            throw $this->reject(SnapshotRejectionCode::InvalidObservedAt, 'observedAt is not a real date-time.');
+        }
+
+        return $observedAt;
     }
 
     private function parseRecoveryPending(stdClass $payload): bool
