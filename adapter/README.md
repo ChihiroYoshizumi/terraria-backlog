@@ -13,9 +13,11 @@ Snapshot 生成・PHP への HTTP 送信・Achievement 判定は行わない（�
 
 | コンポーネント | バージョン |
 | --- | --- |
-| Terraria | 1.4.5.6 |
-| TShock | 6.1.0 |
-| .NET (adapter のビルド/実行対象) | net9.0 (TShock 6.1.0 のビルド対象と一致させる) |
+| Terraria | 1.3.0.8 |
+| TShock | 4.3.13 |
+| .NET (adapter のビルド/実行対象) | `net45` / .NET Framework 4.5 (TShock 4.3.13 のビルド対象と一致させる) |
+| Server API バージョン | `[ApiVersion(1, 22)]` (TShock 4.3.13 本体の宣言値) |
+| サーバー実行環境 | Mono (macOS / Linux / WSL) または .NET Framework 4.5+ (Windows) |
 
 ## ディレクトリ構成
 
@@ -31,9 +33,13 @@ adapter/Tests/                          xUnit unit test project
 ## ビルドに必要なもの: TShock 参照アセンブリ
 
 `adapter/TerrariaBacklog.Adapter.csproj` は TShock が要求する `TerrariaPlugin` 基底クラス等を
-使うため、TShock 配布物に含まれる `TerrariaServer.dll` / `OTAPI.dll` / `TShockAPI.dll` を
+使うため、TShock 配布物に含まれる `TerrariaServer.exe` と `ServerPlugins/TShockAPI.dll` を
 コンパイル時参照として必要とする。これらはライセンス上・サイズ上の理由からリポジトリに
 コミットしない。
+
+TShock 4.3.13 には `OTAPI.dll` も `bin/` ディレクトリも存在せず、`TerrariaApi.Server`
+（`TerrariaPlugin` / `ApiVersionAttribute`）と `Terraria.Main` はいずれも `TerrariaServer.exe`
+に内包されている。そのため参照はこの2つだけでよい。
 
 リポジトリ直下で以下を実行し、`.tshock-server/`（gitignore 済み）に展開する。
 
@@ -51,17 +57,32 @@ adapter/Tests/                          xUnit unit test project
 dotnet build adapter/TerrariaBacklog.Adapter.csproj
 ```
 
+`TargetFramework` は `net45` だが、`Microsoft.NETFramework.ReferenceAssemblies.net45` を
+`PackageReference` しているため、Windows 以外（macOS / Linux / WSL）でも dotnet SDK だけで
+ビルドできる。**ビルドに Mono は不要**（Mono が要るのはサーバーの起動時だけ）。
+出力は `adapter/bin/<Configuration>/net45/TerrariaBacklog.Adapter.dll`。
+
 ## Unit Test
 
 ```bash
 dotnet test adapter/Tests/TerrariaBacklog.Adapter.Tests.csproj
 ```
 
-`Terraria.Main` は実際に稼働している TShock Server 内でのみ安全に構築できる
-（独立したテストプロセス内で `new Main()` すると静的初期化で例外になる）。
-そのため unit test は `TerrariaBacklogPlugin` を実インスタンス化せず、
-リフレクションで TShock Plugin としての契約（`[ApiVersion]` 属性 / `TerrariaPlugin` 継承 /
-コンストラクタ形状）と、Achievement/Backlog 関連の型が Adapter 側に存在しないことを検証する。
+検証対象の `TerrariaBacklog.Adapter.dll` は `net45` であり、そのまま `dotnet test` の
+テストホストへロードすると非 Windows では Mono が必要になる。また `Terraria.Main` は
+実際に稼働している TShock Server 内でのみ安全に構築できる（独立したテストプロセス内で
+`new Main()` すると静的初期化で例外になる）。
+
+そのためテストプロジェクト自体は `net9.0` のままとし、
+`System.Reflection.MetadataLoadContext` でビルド済み `net45` アセンブリの
+**メタデータだけ**を読んで契約を検証する（実行ランタイムに依存せず CI でも回せる）。
+検証内容は次の5点。
+
+1. `TerrariaPlugin` を継承している
+2. `[ApiVersion]` が付いており、その値が `1.22` である（属性の有無ではなく値を固定する）
+3. コンストラクタが1つで `Terraria.Main` を受け取る
+4. `Initialize()` と `Dispose(bool)` を override している
+5. Achievement / BacklogIssue / Registry / Mapping を含む型名が Adapter 側に存在しない
 
 ## ローカル TShock Dedicated Server の起動と Plugin デプロイ
 
@@ -74,31 +95,54 @@ dotnet test adapter/Tests/TerrariaBacklog.Adapter.Tests.csproj
 # 2. Adapter を Release ビルドし、.tshock-server/ServerPlugins/ に配置する
 ./scripts/deploy-adapter.sh
 
-# 3. TShock Dedicated Server を起動する
+# 3. TShock Dedicated Server を起動する（要 Mono。make tshock-run でも可）
 cd .tshock-server
-./TShock.Server -world worlds/dev.wld -autocreate 2
+mono TerrariaServer.exe -world worlds/dev.wld -autocreate 2
 ```
 
-`-autocreate <difficulty>` を指定すると `worlds/dev.wld` が存在しない場合に自動生成される
-（`1`=Classic, `2`=Expert, `3`=Master）。既存 World を使う場合は `-world <path>` のみでよい。
+`-autocreate <size>` を指定すると `worlds/dev.wld` が存在しない場合に自動生成される。
+`<size>` は**ワールドサイズ**で `1`=Small / `2`=Medium / `3`=Large（難易度ではない）。
+難易度は `-difficulty <0|1>`（`0`=Normal, `1`=Expert）で指定する。Terraria 1.3.0.8 に
+Master mode は存在しない。既存 World を使う場合は `-world <path>` のみでよい。
 必要に応じて `-port <port>` でポートを指定できる（既定 7777）。
 
-Apple Silicon (macOS arm64) では TShock 6.1.0 に osx-arm64 バイナリが存在しないため、
-`setup-tshock.sh` は `osx-x64` を取得する。Rosetta 2 が有効な環境であれば `TShock.Server` は
-そのまま実行できる（`softwareupdate --install-rosetta` が未実施の場合は先に有効化すること）。
+### Mono のインストール
+
+TShock 4.3.13 は OS 非依存の単一 zip (`tshock_4.3.13.zip`) を配布しており、中身は
+.NET Framework 4.5 向けの `TerrariaServer.exe` である。macOS / Linux / WSL では Mono が必要。
+
+```bash
+# macOS (Homebrew)
+brew install mono
+
+# WSL (Ubuntu) / Ubuntu
+sudo apt update
+sudo apt install -y mono-complete
+
+# 確認
+mono --version
+```
+
+Windows ネイティブでは .NET Framework 4.5 以上があれば `TerrariaServer.exe` を
+直接実行できる（`mono` プレフィックス不要）。
 
 ### 手動 Smoke Test（実機確認が可能な環境向け）
 
 Task 01 の完了条件のうち、以下は自動化できない手動確認である。
-**このエージェントの実行環境には Terraria クライアントも GUI もないため、この手順は
-実施していない（ドキュメント化のみ）。** 実機で確認する開発者向けの手順として記載する。
+**このエージェントの実行環境には Terraria クライアント・GUI・Mono のいずれもないため、
+この手順は実施していない（ドキュメント化のみ）。** 実機で確認する開発者向けの手順として記載する。
 
-1. 上記の手順で TShock Dedicated Server を起動する。
-2. サーバーのコンソールログに `[TerrariaBacklog.Adapter] loaded (version ...)` が
+1. Mono を導入する（上記「Mono のインストール」）。`mono --version` が通ることを確認する。
+2. `./scripts/setup-tshock.sh` と `./scripts/deploy-adapter.sh` を実行する。
+3. `cd .tshock-server && mono TerrariaServer.exe -world worlds/dev.wld -autocreate 2`
+   （リポジトリ直下からは `make tshock-run`）でサーバーを起動する。
+4. サーバーのコンソールログに `[TerrariaBacklog.Adapter] loaded (version ...)` が
    出力されることを確認する（`TerrariaBacklogPlugin.Initialize()` のログ）。
-3. World がロードされ、サーバーが接続待ち状態（`Listening on port ...`）になることを確認する。
-4. 対応バージョン (Terraria 1.4.5.6) の Vanilla クライアントからサーバー IP:ポートへ接続する。
-5. tModLoader や専用 MOD なしで接続できることを確認する（Vanilla クライアントのみが要件）。
+5. World がロードされ、サーバーが接続待ち状態（`Listening on port ...`）になることを確認する。
+6. Steam の Terraria > プロパティ > Betas から `1.3.0.8` を選択し、Vanilla クライアントを
+   サーバーと同じバージョンに揃える。
+7. その Vanilla クライアントからサーバー IP:ポート（既定 7777）へ接続する。
+8. tModLoader や専用 MOD なしで接続できることを確認する（Vanilla クライアントのみが要件）。
 
 ### 配布物・生成物は Git 管理しない
 
