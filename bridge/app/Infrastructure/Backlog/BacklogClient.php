@@ -56,6 +56,36 @@ final class BacklogClient
     }
 
     /**
+     * Issue 作成等の write (docs/design.md §21)。
+     *
+     * Backlog API v2 の write endpoint は `application/x-www-form-urlencoded` を
+     * 受け取る (JSON body ではない)。
+     * https://developer.nulab.com/docs/backlog/api/2/add-issue/
+     *
+     * 失敗は read と同じ例外方針で表現する。特に timeout は
+     * `BacklogTransportException` となり「作成されたかどうか不明」を意味する。
+     * 呼び出し側はこれを「作成されていない」と読み替えず、再検索で確認する
+     * (docs/design.md §13.4, §10.4)。
+     *
+     * @param  array<string, mixed>  $form
+     */
+    public function post(string $path, array $form = []): BacklogResponse
+    {
+        return $this->send('POST', $path, [], $form);
+    }
+
+    /**
+     * Issue 更新 (docs/design.md §21)。Backlog API v2 の update-issue は PATCH。
+     * https://developer.nulab.com/docs/backlog/api/2/update-issue/
+     *
+     * @param  array<string, mixed>  $form
+     */
+    public function patch(string $path, array $form = []): BacklogResponse
+    {
+        return $this->send('PATCH', $path, [], $form);
+    }
+
+    /**
      * API Key が設定されているか。値そのものは公開しない。
      */
     public function hasApiKey(): bool
@@ -106,14 +136,15 @@ final class BacklogClient
 
     /**
      * @param  array<string, mixed>  $query
+     * @param  array<string, mixed>|null  $form  非 null なら form-urlencoded body を送る
      */
-    private function send(string $method, string $path, array $query): BacklogResponse
+    private function send(string $method, string $path, array $query, ?array $form = null): BacklogResponse
     {
         $queryString = self::buildQueryString($query);
         $url = $queryString === '' ? $path : $path.'?'.$queryString;
 
         try {
-            $response = $this->http
+            $request = $this->http
                 ->baseUrl($this->baseUrl)
                 ->withHeaders([
                     // docs/design.md §13.1: API Key は header で送る。
@@ -121,8 +152,11 @@ final class BacklogClient
                     'Accept' => 'application/json',
                 ])
                 ->connectTimeout($this->connectTimeout)
-                ->timeout($this->requestTimeout)
-                ->send($method, $url);
+                ->timeout($this->requestTimeout);
+
+            $response = $form === null
+                ? $request->send($method, $url)
+                : $request->asForm()->send($method, $url, ['form_params' => self::normalizeForm($form)]);
         } catch (ConnectionException $exception) {
             // 元例外は previous に持たせない (秘密情報混入の回避)。
             $message = $this->redact(sprintf(
@@ -231,6 +265,32 @@ final class BacklogClient
             'result' => 'failed',
             'error_type' => $errorType,
         ], $rateLimit?->toLogContext() ?? []));
+    }
+
+    /**
+     * form body の値を文字列へ正規化する。
+     *
+     * bool を PHP 既定の "1" / "" にすると Backlog 側で意図しない解釈になるため、
+     * query parameter と同じ "true" / "false" 表現へ揃える。
+     *
+     * @param  array<string, mixed>  $form
+     * @return array<string, string|list<string>>
+     */
+    private static function normalizeForm(array $form): array
+    {
+        $normalized = [];
+
+        foreach ($form as $key => $value) {
+            if (is_array($value)) {
+                $normalized[$key] = array_values(array_map(self::scalarToString(...), $value));
+
+                continue;
+            }
+
+            $normalized[$key] = self::scalarToString($value);
+        }
+
+        return $normalized;
     }
 
     private static function scalarToString(mixed $value): string
