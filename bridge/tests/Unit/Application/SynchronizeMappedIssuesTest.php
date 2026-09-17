@@ -149,6 +149,32 @@ final class SynchronizeMappedIssuesTest extends MappingTestCase
     }
 
     #[Test]
+    public function it_rejects_a_registry_index_built_for_another_project(): void
+    {
+        $issueKey = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
+
+        // World Key は同じだが、別 Backlog プロジェクトで作られた Registry。
+        // 対象 Project には無関係な研修課題が同居するため、World だけを見て通すと
+        // 他プロジェクトの達成で対象プロジェクトの課題を完了させてしまう。
+        $registry = new RegistryIndex(WorldKey::fromString(self::WORLD_A), self::OTHER_PROJECT_ID, [
+            $this->registryIssue('item:1326', done: true, projectId: self::OTHER_PROJECT_ID),
+        ]);
+
+        try {
+            $this->synchronizer()->synchronizeWithRegistry($this->world(), $registry);
+
+            $this->fail('別 Project の registry index は拒否されなければならない.');
+        } catch (InvalidArgumentException) {
+            // 黙って続行せず明示的に失敗すること。
+        }
+
+        // PATCH を 1 回も発行していないこと。
+        $this->assertSame([], $this->backlog->patchedIssueKeys());
+        $this->assertSame(0, $this->backlog->writeCount());
+        $this->assertFalse($this->backlog->isDone($issueKey));
+    }
+
+    #[Test]
     public function it_completes_a_post_hoc_mapping_on_the_next_synchronization(): void
     {
         $synchronizer = $this->synchronizer();
@@ -277,10 +303,10 @@ final class SynchronizeMappedIssuesTest extends MappingTestCase
         return WorldKey::fromString(self::WORLD_A);
     }
 
-    private function registryIssue(string $achievementKey, bool $done): RegistryIssue
+    private function registryIssue(string $achievementKey, bool $done, ?int $projectId = null): RegistryIssue
     {
         return new RegistryIssue(
-            projectId: self::PROJECT_ID,
+            projectId: $projectId ?? self::PROJECT_ID,
             issueId: crc32($achievementKey),
             issueKey: self::PROJECT_KEY.'-registry-'.$achievementKey,
             recordType: 'registry',

@@ -92,6 +92,19 @@ final readonly class SynchronizeMappedIssues
             throw new InvalidArgumentException('registry index が対象 World と一致しない.');
         }
 
+        // World だけでは足りない。別 Backlog プロジェクトで作られた RegistryIndex は
+        // 同じ World を名乗れるため、その完了済み Achievement Key が対象 Project の
+        // MappingIndex と join され、**無関係な課題を完了にしてしまう**。
+        // Project ID も突合してから委譲する。
+        //
+        // index が渡されていない場合はここで 1 回だけ読み、そのまま synchronize へ
+        // 渡す。照合のために scan 回数を増やさない (docs/design.md §12, §20)。
+        $index ??= $this->mappings->loadIncompleteIndex($world);
+
+        if ($registry->projectId !== $index->projectId) {
+            throw new InvalidArgumentException('registry index が mapping index と同じ Project ではない.');
+        }
+
         return $this->synchronize($world, $registry->completedAchievementKeys(), $index);
     }
 
