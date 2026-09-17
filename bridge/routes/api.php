@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\Api\V1\SnapshotController;
+use App\Http\Middleware\EnsureAdapterToken;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -7,13 +9,19 @@ use Illuminate\Support\Facades\Route;
 | API Routes
 |--------------------------------------------------------------------------
 |
-| Task 01 の時点では Snapshot endpoint (docs/design.md §6.1
-| POST /api/v1/worlds/{worldKey}/snapshots) を実装しない。
-| ここには後続 Task (02: snapshot-api-validation) が
-| Domain/Application 層と接続したルートを追加する。
+| Adapter → PHP Bridge の endpoint (docs/design.md §6.1)。
+| 外部から自由に達成を登録できる公開 endpoint は作らない (docs/spec.md §10)。
 |
 */
 
 Route::prefix('v1')->group(function (): void {
-    // Task 02 以降でここに Snapshot endpoint 等を追加する。
+    // POST /api/v1/worlds/{worldKey}/snapshots
+    //
+    // worldKey は `terraria:<Main.worldID>` 形式か管理者設定の固定 ID
+    // (docs/design.md §5.1)。path segment として安全な文字だけを受け付け、
+    // 受理してよいワールドかは allowlist が判定する (§5.2)。
+    Route::post('/worlds/{worldKey}/snapshots', [SnapshotController::class, 'store'])
+        ->where('worldKey', '[A-Za-z0-9:._-]{1,128}')
+        ->middleware(EnsureAdapterToken::class)
+        ->name('api.v1.worlds.snapshots.store');
 });
