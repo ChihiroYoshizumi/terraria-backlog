@@ -293,6 +293,33 @@ final class BacklogMappingCompletionTest extends MappingTestCase
     }
 
     #[Test]
+    public function it_verifies_instead_of_failing_when_a_2xx_response_is_not_json(): void
+    {
+        $issueKey = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
+        $mapping = $this->loadMapping('item:1326');
+
+        // PATCH は適用されたが、応答 body が JSON として解釈できない。
+        // BacklogClient はこのとき status=200 の BacklogApiException を投げる。
+        // `! isRetriable()` だけで確定的失敗とみなすと WriteFailed で固定され、
+        // 実際には完了している課題を失敗として残してしまう。
+        $this->backlog->interceptNext('PATCH', '/api/v2/issues/', static function (FakeMappingBacklog $backlog) use ($issueKey): mixed {
+            $backlog->setStatus($issueKey, done: true);
+
+            return Http::response('<html>proxy error</html>', 200);
+        });
+
+        $result = $this->repository()->complete($mapping);
+
+        // 4xx ではないので definite failure ではない。再取得して完了を確認する。
+        $this->assertSame(CompletionStatus::Completed, $result->status);
+        $this->assertNotSame(CompletionFailureReason::WriteFailed, $result->reason);
+        $this->assertTrue($this->backlog->isDone($issueKey));
+        // 二重 PATCH はしない。
+        $this->assertSame([$issueKey], $this->backlog->patchedIssueKeys());
+        $this->assertSame(2, $this->backlog->countRequests('GET', '/api/v2/issues/'.$issueKey));
+    }
+
+    #[Test]
     public function it_completes_a_reopened_issue_again(): void
     {
         $issueKey = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
