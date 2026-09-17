@@ -12,6 +12,15 @@ namespace TerrariaBacklog.Adapter.Tests;
 /// </summary>
 public class SnapshotSenderTests
 {
+    /// <summary>
+    /// 応答は送信した envelope の requestId / worldKey と一致していなければ
+    /// 通知として採用されない（contracts/snapshot-response-v1.schema.json）。
+    /// テストでは requestId を固定して、応答 fixture と一致させる。
+    /// </summary>
+    private const string RequestId = "0199f136-9e36-7f41-b148-e5b4f384a321";
+
+    private const string WorldKey = "terraria:123456789";
+
     private const string OkResponseWithPlayerAck =
         """
         {
@@ -51,7 +60,7 @@ public class SnapshotSenderTests
     {
         log = new RecordingLog();
 
-        return new SnapshotSender(Settings(), Runtime(), transport, log);
+        return new SnapshotSender(Settings(), Runtime(), transport, log, () => Guid.Parse(RequestId));
     }
 
     private static PendingSnapshot Collection(params string[] players)
@@ -303,6 +312,186 @@ public class SnapshotSenderTests
 
         Assert.False(sender.TryDequeueNotification(out _));
         Assert.NotEmpty(log.Errors);
+    }
+
+    // ------------------------------------------------------------------
+    // 応答 (envelope) の照合 (contracts/snapshot-response-v1.schema.json)
+    // ------------------------------------------------------------------
+
+    private const string OtherRequestId = "0199f200-1111-7222-8333-444455556666";
+
+    private static string OkResponse(string requestId, string worldKey) =>
+        $$"""
+        {
+          "requestId": "{{requestId}}",
+          "worldKey": "{{worldKey}}",
+          "notifications": [
+            { "audience": "players", "playerNames": ["player1"], "message": "[Backlog] 登録しました。" }
+          ]
+        }
+        """;
+
+    [Fact]
+    public void ResponseForAnotherRequestIdIsNotDispatched()
+    {
+        // 古い応答・別要求の応答をそのまま表示すると、別要求の通知が
+        // 誤った Player へ出る。requestId が一致しないものは捨てる。
+        var transport = FakeTransport.AlwaysOk(OkResponse(OtherRequestId, WorldKey));
+        var sender = NewSender(transport, out var log);
+
+        sender.Enqueue(Collection("player1"));
+        sender.PumpOnce();
+
+        Assert.False(sender.TryDequeueNotification(out _));
+        Assert.NotEmpty(log.Errors);
+    }
+
+    [Fact]
+    public void ResponseForAnotherWorldKeyIsNotDispatched()
+    {
+        var transport = FakeTransport.AlwaysOk(OkResponse(RequestId, "terraria:999999999"));
+        var sender = NewSender(transport, out var log);
+
+        sender.Enqueue(Collection("player1"));
+        sender.PumpOnce();
+
+        Assert.False(sender.TryDequeueNotification(out _));
+        Assert.NotEmpty(log.Errors);
+    }
+
+    [Fact]
+    public void ResponseWithoutTheRequiredIdentityIsNotDispatched()
+    {
+        // requestId / worldKey は response contract の required。
+        // 欠けた 200 応答は照合できないので通知を採用しない。
+        const string missingIdentity =
+            """
+            {
+              "notifications": [
+                { "audience": "players", "playerNames": ["player1"], "message": "[Backlog] 登録しました。" }
+              ]
+            }
+            """;
+
+        var transport = FakeTransport.AlwaysOk(missingIdentity);
+        var sender = NewSender(transport, out var log);
+
+        sender.Enqueue(Collection("player1"));
+        sender.PumpOnce();
+
+        Assert.False(sender.TryDequeueNotification(out _));
+        Assert.NotEmpty(log.Errors);
+    }
+
+    [Fact]
+    public void MatchingResponseIsDispatchedRegardlessOfRequestIdCasing()
+    {
+        // requestId は UUID の16進表記。大文字小文字の差だけで捨てない。
+        var transport = FakeTransport.AlwaysOk(OkResponse(RequestId.ToUpperInvariant(), WorldKey));
+        var sender = NewSender(transport, out _);
+
+        sender.Enqueue(Collection("player1"));
+        sender.PumpOnce();
+
+        Assert.True(sender.TryDequeueNotification(out var notification));
+        Assert.Equal("[Backlog] 登録しました。", notification.Message);
+    }
+
+    // ------------------------------------------------------------------
+    // 復旧待ちフラグ (docs/design.md §15.2 / AC-09)
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void UnreadableSuccessResponseAlsoSetsTheRecoveryPendingFlag()
+    {
+        // 2xx でも body が壊れていれば結果は不明。次の periodic / manual に
+        // recoveryPending を載せないと、PHP が復旧後の server 通知を出せない。
+        var transport = new FakeTransport((_, _, _) => SnapshotTransportResult.FromResponse(200, "not json"));
+        var sender = NewSender(transport, out var log);
+
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+
+        Assert.True(sender.RecoveryPending);
+        Assert.NotEmpty(log.Errors);
+    }
+
+    [Fact]
+    public void MismatchedResponseAlsoSetsTheRecoveryPendingFlag()
+    {
+        var transport = FakeTransport.AlwaysOk(OkResponse(OtherRequestId, WorldKey));
+        var sender = NewSender(transport, out _);
+
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+
+        Assert.True(sender.RecoveryPending);
+    }
+
+    [Fact]
+    public void RecoveryFlagStaysSetWhenANewerRequestFailsBeforeTheNoticeIsDisplayed()
+    {
+        // worker が復旧通知を積んだ後、game thread が drain する前に後続要求が失敗した場合、
+        // 古い通知の表示でフラグを解除してはならない（新しい失敗を隠さない）。
+        var responses = new Queue<SnapshotTransportResult>(
+        [
+            SnapshotTransportResult.FromFailure("down"),
+            SnapshotTransportResult.FromResponse(200, OkResponseWithRecoveryNotice),
+            SnapshotTransportResult.FromFailure("down again"),
+            SnapshotTransportResult.FromResponse(200, OkResponseWithoutNotifications),
+        ]);
+
+        var transport = new FakeTransport((_, _, _) => responses.Dequeue());
+        var sender = NewSender(transport, out _);
+
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+        Assert.True(sender.RecoveryPending);
+
+        // 復旧通知が queue に積まれる。まだ表示はしていない。
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+
+        // drain 前に後続要求が失敗する。
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+
+        // ここで初めて表示する。積まれた通知は古い世代のものなので解除しない。
+        Assert.True(sender.TryDequeueNotification(out var notification));
+        Assert.Equal("server", notification.Audience);
+        sender.OnNotificationsDispatched(true);
+
+        Assert.True(sender.RecoveryPending);
+
+        // 以後の periodic にも recoveryPending が載り続ける。
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+        var bodies = transport.Sent.ToArray();
+        Assert.Contains("\"recoveryPending\":true", bodies[3].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DispatchWithoutAServerNotificationDoesNotClearTheRecoveryFlag()
+    {
+        var responses = new Queue<SnapshotTransportResult>(
+        [
+            SnapshotTransportResult.FromFailure("down"),
+            SnapshotTransportResult.FromResponse(200, OkResponseWithPlayerAck),
+        ]);
+
+        var transport = new FakeTransport((_, _, _) => responses.Dequeue());
+        var sender = NewSender(transport, out _);
+
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+
+        sender.Enqueue(Periodic());
+        sender.PumpOnce();
+
+        Assert.True(sender.TryDequeueNotification(out _));
+        sender.OnNotificationsDispatched(false);
+
+        Assert.True(sender.RecoveryPending);
     }
 
     [Fact]

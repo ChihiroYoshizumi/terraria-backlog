@@ -68,6 +68,22 @@ namespace TerrariaBacklog.Adapter.Transport
         {
             get { return _notifications; }
         }
+
+        /// <summary>
+        /// 送信した envelope の identity と一致するか。
+        ///
+        /// contracts/snapshot-response-v1.schema.json は <c>requestId</c> / <c>worldKey</c> を
+        /// 必須にしている。これを in-flight の要求と照合せずに通知を表示すると、
+        /// 古い応答や別要求の応答で誤った Player へ通知しうる (docs/design.md §6.5)。
+        ///
+        /// <c>requestId</c> は UUID の16進表記であり、大文字小文字の差は同一とみなす。
+        /// <c>worldKey</c> は識別子そのものなので厳密一致で比較する。
+        /// </summary>
+        public bool Matches(string requestId, string worldKey)
+        {
+            return string.Equals(RequestId, requestId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(WorldKey, worldKey, StringComparison.Ordinal);
+        }
     }
 
     /// <summary>
@@ -93,6 +109,17 @@ namespace TerrariaBacklog.Adapter.Transport
             if (root == null)
             {
                 error = "response must be a JSON object.";
+                return false;
+            }
+
+            // contracts/snapshot-response-v1.schema.json の required は
+            // requestId / worldKey / notifications の3つ。欠けた応答は読めたことにしない。
+            string requestId;
+            string worldKey;
+
+            if (!TryReadRequiredString(root, "requestId", out requestId, out error)
+                || !TryReadRequiredString(root, "worldKey", out worldKey, out error))
+            {
                 return false;
             }
 
@@ -171,19 +198,40 @@ namespace TerrariaBacklog.Adapter.Transport
                 notifications.Add(new AdapterNotification(audience, playerNames, (string)rawMessage));
             }
 
-            response = new SnapshotResponse(
-                ReadOptionalString(root, "requestId"),
-                ReadOptionalString(root, "worldKey"),
-                notifications);
+            response = new SnapshotResponse(requestId, worldKey, notifications);
 
             return true;
         }
 
-        private static string ReadOptionalString(IDictionary<string, object> root, string name)
+        private static bool TryReadRequiredString(
+            IDictionary<string, object> root,
+            string name,
+            out string value,
+            out string error)
         {
-            object value;
+            object raw;
+            value = null;
 
-            return root.TryGetValue(name, out value) ? value as string : null;
+            if (!root.TryGetValue(name, out raw))
+            {
+                error = "response is missing '" + name + "'.";
+
+                return false;
+            }
+
+            var text = raw as string;
+
+            if (text == null || text.Length == 0)
+            {
+                error = "response." + name + " must be a non-empty string.";
+
+                return false;
+            }
+
+            value = text;
+            error = null;
+
+            return true;
         }
     }
 }

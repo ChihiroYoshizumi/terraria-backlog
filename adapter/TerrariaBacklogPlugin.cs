@@ -43,6 +43,12 @@ namespace TerrariaBacklog.Adapter
 
         private readonly IAdapterLog _log = new TShockAdapterLog();
 
+        /// <summary>
+        /// 初期化で登録したものの undo。初期化が途中で失敗した場合も teardown でも
+        /// ここから逆順に巻き戻す。部分的に登録された callback を残さない。
+        /// </summary>
+        private readonly RollbackScope _rollback;
+
         private AdapterSettings _settings;
         private TerrariaWorldObserver _observer;
         private CollectionChestChangeTracker _tracker;
@@ -91,6 +97,8 @@ namespace TerrariaBacklog.Adapter
             // その時点では TShock.Log / TShock.SavePath 等がまだ初期化されていないので、
             // Order を 1 にして **必ず TShock 本体の後に初期化する**。
             Order = 1;
+
+            _rollback = new RollbackScope(_log);
         }
 
         /// <summary>
@@ -107,6 +115,10 @@ namespace TerrariaBacklog.Adapter
             catch (Exception ex)
             {
                 _enabled = false;
+
+                // 途中まで登録した hook / command / worker thread を必ず巻き戻す。
+                // 残すと、無効化したはずの Adapter の callback がサーバー稼働中ずっと呼ばれる。
+                _rollback.Rollback();
                 _log.Error("initialization failed; the adapter stays disabled: " + ex);
             }
         }
@@ -171,18 +183,29 @@ namespace TerrariaBacklog.Adapter
                 runtime,
                 new HttpSnapshotTransport(_settings.RequestTimeoutSeconds),
                 _log);
+            _rollback.Add(DisposeSender);
+
             _dispatcher = new NotificationDispatcher(new TShockNotificationSink(), _log);
             _periodic = new PeriodicTrigger(_settings.ReconciliationIntervalSeconds);
             _chestChangeWatcher = new ChestChangeWatcher(this, _tracker, _log, null);
 
             // 4. hook 登録
+            //
+            // 登録のたびに undo を積む。以降のどの段階で throw しても
+            // Initialize() の catch が逆順に巻き戻す。
             ServerApi.Hooks.GamePostInitialize.Register(this, OnGamePostInitialize);
+            _rollback.Add(DeregisterGamePostInitialize);
+
             ServerApi.Hooks.GameUpdate.Register(this, OnGameUpdate);
+            _rollback.Add(DeregisterGameUpdate);
+
             _chestChangeWatcher.Register();
+            _rollback.Add(DeregisterChestChangeWatcher);
 
             _command = new Command("terrariabacklog.sync", OnBacklogCommand, "backlog");
             _command.HelpText = "/backlog sync - reason=manual の Full Snapshot を PHP Bridge へ即時送信する。";
             Commands.ChatCommands.Add(_command);
+            _rollback.Add(RemoveCommand);
 
             _sender.Start();
             _enabled = true;
@@ -289,11 +312,10 @@ namespace TerrariaBacklog.Adapter
                 return;
             }
 
-            if (_dispatcher.Dispatch(batch))
-            {
-                // docs/design.md §15.2: 復旧完了通知を表示したらフラグを解除する。
-                _sender.OnRecoveryNotificationDisplayed();
-            }
+            // docs/design.md §15.2: 復旧完了通知を表示したらフラグを解除する。
+            // 解除可否（通知を確立した要求の世代）の判定は sender 側が持つため、
+            // 表示できなかった場合も必ず通知する。
+            _sender.OnNotificationsDispatched(_dispatcher.Dispatch(batch));
         }
 
         private void PumpCollectionChange(DateTime nowUtc)
@@ -424,33 +446,57 @@ namespace TerrariaBacklog.Adapter
 
         private void Teardown()
         {
-            if (_chestChangeWatcher != null)
-            {
-                _chestChangeWatcher.Deregister();
-                _chestChangeWatcher = null;
-            }
-
-            if (_enabled)
-            {
-                ServerApi.Hooks.GamePostInitialize.Deregister(this, OnGamePostInitialize);
-                ServerApi.Hooks.GameUpdate.Deregister(this, OnGameUpdate);
-            }
-
-            if (_command != null)
-            {
-                Commands.ChatCommands.Remove(_command);
-                _command = null;
-            }
-
-            if (_sender != null)
-            {
-                // メモリ上の未送信 Snapshot と ACK context はここで失われてよい
-                // (docs/design.md §7.6)。永続化しない。
-                _sender.Dispose();
-                _sender = null;
-            }
-
             _enabled = false;
+
+            // 初期化で積んだ undo を逆順に実行する。_enabled では分岐しない。
+            // 初期化が途中で失敗していた場合は Initialize() が既に巻き戻しており、
+            // Rollback() は2度実行しない。
+            _rollback.Rollback();
+        }
+
+        private void DeregisterGamePostInitialize()
+        {
+            ServerApi.Hooks.GamePostInitialize.Deregister(this, OnGamePostInitialize);
+        }
+
+        private void DeregisterGameUpdate()
+        {
+            ServerApi.Hooks.GameUpdate.Deregister(this, OnGameUpdate);
+        }
+
+        private void DeregisterChestChangeWatcher()
+        {
+            if (_chestChangeWatcher == null)
+            {
+                return;
+            }
+
+            _chestChangeWatcher.Deregister();
+            _chestChangeWatcher = null;
+        }
+
+        private void RemoveCommand()
+        {
+            if (_command == null)
+            {
+                return;
+            }
+
+            Commands.ChatCommands.Remove(_command);
+            _command = null;
+        }
+
+        private void DisposeSender()
+        {
+            if (_sender == null)
+            {
+                return;
+            }
+
+            // メモリ上の未送信 Snapshot と ACK context はここで失われてよい
+            // (docs/design.md §7.6)。永続化しない。
+            _sender.Dispose();
+            _sender = null;
         }
     }
 }

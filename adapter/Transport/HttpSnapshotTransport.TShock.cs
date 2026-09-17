@@ -18,10 +18,21 @@ namespace TerrariaBacklog.Adapter.Transport
     public sealed class HttpSnapshotTransport : ISnapshotTransport
     {
         private readonly int _timeoutMilliseconds;
+        private readonly int _maxResponseBytes;
 
         public HttpSnapshotTransport(int timeoutSeconds)
+            : this(timeoutSeconds, ResponseBodyReader.DefaultMaxResponseBytes)
+        {
+        }
+
+        /// <param name="maxResponseBytes">
+        /// 応答 body の上限。超えた応答は読み切らず transport failure にする
+        /// (<see cref="ResponseBodyReader"/>)。
+        /// </param>
+        public HttpSnapshotTransport(int timeoutSeconds, int maxResponseBytes)
         {
             _timeoutMilliseconds = Math.Max(1, timeoutSeconds) * 1000;
+            _maxResponseBytes = maxResponseBytes;
         }
 
         public SnapshotTransportResult Send(string url, string bearerToken, string jsonBody)
@@ -49,9 +60,7 @@ namespace TerrariaBacklog.Adapter.Transport
                 {
                     using (var response = (HttpWebResponse)request.GetResponse())
                     {
-                        return SnapshotTransportResult.FromResponse(
-                            (int)response.StatusCode,
-                            ReadBody(response));
+                        return ToResult(response);
                     }
                 }
                 catch (WebException ex)
@@ -66,9 +75,7 @@ namespace TerrariaBacklog.Adapter.Transport
 
                     using (errorResponse)
                     {
-                        return SnapshotTransportResult.FromResponse(
-                            (int)errorResponse.StatusCode,
-                            ReadBody(errorResponse));
+                        return ToResult(errorResponse);
                     }
                 }
             }
@@ -83,20 +90,24 @@ namespace TerrariaBacklog.Adapter.Transport
             return ex.Status + ": " + ex.Message;
         }
 
-        private static string ReadBody(HttpWebResponse response)
+        /// <summary>
+        /// 応答を結果へ変換する。body が上限を超える場合は読み切らず、
+        /// status code に関係なく transport failure として返す。
+        /// </summary>
+        private SnapshotTransportResult ToResult(HttpWebResponse response)
         {
+            string body;
+            string error;
+
             using (var stream = response.GetResponseStream())
             {
-                if (stream == null)
+                if (!ResponseBodyReader.TryRead(stream, _maxResponseBytes, out body, out error))
                 {
-                    return string.Empty;
-                }
-
-                using (var reader = new StreamReader(stream, Encoding.UTF8))
-                {
-                    return reader.ReadToEnd();
+                    return SnapshotTransportResult.FromFailure(error);
                 }
             }
+
+            return SnapshotTransportResult.FromResponse((int)response.StatusCode, body);
         }
     }
 }
