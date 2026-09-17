@@ -157,4 +157,4 @@ README または各ディレクトリの README に、最低限以下を記載�
   - `dotnet test adapter/Tests/TerrariaBacklog.Adapter.Tests.csproj`
   - `npm run validate`（contracts）
 - spec/design との矛盾: なし。
-- PR: (この PR で作成。マージ後に番号を追記)
+- PR: https://github.com/ChihiroYoshizumi/terraria-backlog/pull/15
