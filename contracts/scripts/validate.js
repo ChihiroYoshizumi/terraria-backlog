@@ -60,15 +60,32 @@ for (const c of cases) {
 // notification-only 契約は response schema の additionalProperties: false が担保している
 // (docs/design.md §6.5)。example を個別に検査しても schema 検証と重複するだけなので、
 // ここでは「その担保自体が外されていないこと」を検証する。
+// root だけでなく notification 1 件ごとの allowlist も対象にする。
+// 後者が外れると、notification オブジェクトに Achievement Key 等を足せてしまう。
 const responseSchema = loadJson("snapshot-response-v1.schema.json");
-if (responseSchema.additionalProperties !== false) {
-  failed = true;
-  console.error(
-    "NG   snapshot-response-v1.schema.json の additionalProperties: false が外れています。" +
-      " Achievement Key / Backlog Issue Key / Registry・Mapping 結果の漏洩を防げません。"
+const allowlistTargets = [
+  { label: "root", schema: responseSchema },
+  {
+    label: "properties.notifications.items",
+    schema: responseSchema.properties?.notifications?.items,
+  },
+];
+
+let allowlistOk = true;
+for (const target of allowlistTargets) {
+  if (target.schema?.additionalProperties !== false) {
+    allowlistOk = false;
+    failed = true;
+    console.error(
+      `NG   snapshot-response-v1.schema.json の ${target.label} に additionalProperties: false がありません。` +
+        " Achievement Key / Backlog Issue Key / Registry・Mapping 結果の漏洩を防げません。"
+    );
+  }
+}
+if (allowlistOk) {
+  console.log(
+    "OK   response schema enforces notification-only (additionalProperties: false at root and notifications.items)"
   );
-} else {
-  console.log("OK   response schema enforces notification-only (additionalProperties: false)");
 }
 
 // items catalog は PHP が type(=id) をキーに maxStack を引く前提 (docs/design.md:212, §6.4)。
