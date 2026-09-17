@@ -8,7 +8,8 @@ Snapshot 生成・PHP への HTTP 送信・Achievement 判定は行わない（�
 
 ## 対応バージョン（固定）
 
-`docs/design.md` §2.3 に従い、以下の組み合わせのみをサポートする。
+`docs/design.md` §2.3 に従い、以下の組み合わせのみをサポートする。正本は `docs/design.md` §2.3 で、
+変更する場合は `scripts/setup-tshock.sh` の `TSHOCK_VERSION` / `TERRARIA_VERSION` と root README も併せて更新する。
 
 | コンポーネント | バージョン |
 | --- | --- |

@@ -41,7 +41,8 @@ make contracts-validate
 
 ## ローカルで TShock Dedicated Server を起動する
 
-対応バージョンは固定している（`docs/design.md` §2.3）。
+対応バージョンは固定している。正本は `docs/design.md` §2.3 で、変更する場合は
+`scripts/setup-tshock.sh` の `TSHOCK_VERSION` / `TERRARIA_VERSION` と `adapter/README.md` も併せて更新する。
 
 | コンポーネント | バージョン |
 | --- | --- |

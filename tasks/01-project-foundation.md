@@ -142,7 +142,8 @@ README または各ディレクトリの README に、最低限以下を記載�
 
 ## 実装状況
 
-- status: completed
+- status: in_progress（実装・自動確認は完了。完了条件のうち手動 Smoke Test が未実施のため completed にしない）
+- 残作業: 下記「実機検証」の4項目（TShock Dedicated Server の起動 / Plugin ロードのコンソール確認 / World ロードと接続待ち / Vanilla クライアントからの接続）を実機で確認し、完了後に status を completed へ更新する
 - 実施日: 2026-09-17
 - 実施内容:
   - `bridge/`: Laravel 13 / PHP 8.5, DB 非依存 (QUEUE_CONNECTION=sync / SESSION_DRIVER=array / CACHE_STORE=array)。`app/Domain`, `app/Application`, `app/Infrastructure/Backlog` を新設。`composer test` が DB_* 未設定でも成功することを確認済み。
