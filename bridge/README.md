@@ -20,6 +20,18 @@ bridge/tests/Unit/
 bridge/tests/Feature/
 ```
 
+## 必要な環境
+
+`docs/design.md` §2.1 に従い **PHP 8.5 以上** を必須とする（`composer.json` の `require.php` も `^8.5`）。
+
+Ubuntu / WSL では標準リポジトリの PHP が 8.5 に満たない場合があるため、`ppa:ondrej/php` を追加して導入する。
+
+```bash
+sudo add-apt-repository ppa:ondrej/php && sudo apt update
+sudo apt install -y php8.5-cli php8.5-mbstring php8.5-xml php8.5-curl php8.5-zip
+php -v   # 8.5 以上であることを確認する
+```
+
 ## セットアップ
 
 ```bash
