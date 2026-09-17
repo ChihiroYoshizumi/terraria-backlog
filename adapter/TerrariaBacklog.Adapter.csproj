@@ -1,15 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- TShock 6.1.0 は net9.0 をターゲットにビルドされている (docs/design.md §2.3)。 -->
-    <TargetFramework>net9.0</TargetFramework>
+    <!--
+      TShock 4.3.13 / TerrariaServer.exe は .NETFramework,Version=v4.5 をターゲットに
+      ビルドされている (docs/design.md §2.3)。Plugin も同じ TFM に揃える必要がある。
+      Microsoft.NETFramework.ReferenceAssemblies.net45 を参照することで、
+      Windows 以外 (macOS / Linux / WSL) の dotnet SDK でもビルドできる。
+    -->
+    <TargetFramework>net45</TargetFramework>
     <RootNamespace>TerrariaBacklog.Adapter</RootNamespace>
     <AssemblyName>TerrariaBacklog.Adapter</AssemblyName>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <!-- TShock/TerrariaServer/OTAPI は ServerPlugins から実行時に解決されるため出力にコピーしない。 -->
+    <!-- net45 では Nullable reference types / ImplicitUsings は使えないため無効にする。 -->
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- TShock/TerrariaServer は ServerPlugins から実行時に解決されるため出力にコピーしない。 -->
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
 
   <!-- TShockServerDir と参照 DLL の存在チェックは adapter/Directory.Build.props で共通定義する。 -->
@@ -22,12 +29,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- net45 の参照アセンブリを NuGet から取得する (非 Windows でのビルドに必須)。 -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net45" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      TShock 4.3.13 には OTAPI.dll / bin/ は存在しない。
+      TerrariaApi.Server (ApiVersionAttribute / TerrariaPlugin) と Terraria.Main は
+      いずれも TerrariaServer.exe に内包されているため、参照はこの2つだけでよい。
+    -->
     <Reference Include="TerrariaServer">
-      <HintPath>$(TShockServerDir)/bin/TerrariaServer.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="OTAPI">
-      <HintPath>$(TShockServerDir)/bin/OTAPI.dll</HintPath>
+      <HintPath>$(TShockServerDir)/TerrariaServer.exe</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="TShockAPI">

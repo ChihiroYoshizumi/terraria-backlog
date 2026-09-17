@@ -13,7 +13,7 @@
   <!-- 参照 DLL が未取得の場合、意味の分かるエラーで止める。adapter/ 配下の全 csproj に適用される。 -->
   <Target Name="EnsureTShockReferencesExist" BeforeTargets="BeforeBuild;BeforeCompile;CoreCompile">
     <Error
-      Condition="!Exists('$(TShockServerDir)/bin/TerrariaServer.dll') Or !Exists('$(TShockServerDir)/bin/OTAPI.dll') Or !Exists('$(TShockServerDir)/ServerPlugins/TShockAPI.dll')"
+      Condition="!Exists('$(TShockServerDir)/TerrariaServer.exe') Or !Exists('$(TShockServerDir)/ServerPlugins/TShockAPI.dll')"
       Text="TShock reference assemblies not found under '$(TShockServerDir)'. Run scripts/setup-tshock.sh first (see adapter/README.md), or pass -p:TShockServerDir=/path/to/tshock-server." />
   </Target>
 
