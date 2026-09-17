@@ -1,0 +1,78 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Providers;
+
+use App\Console\Commands\Support\RuntimeConfigurationChecker;
+use App\Infrastructure\Backlog\BacklogClient;
+use App\Infrastructure\Backlog\IssueListPaginator;
+use App\Infrastructure\Backlog\ProjectConfigurationRepository;
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Support\ServiceProvider;
+use Psr\Log\LoggerInterface;
+
+/**
+ * Backlog 連携 (Task 03) の DI 定義。
+ *
+ * `AppServiceProvider` は他 Task と共有するため、Backlog 固有の binding は
+ * 本 Provider に閉じる。
+ */
+final class BacklogServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->app->singleton(BacklogClient::class, function ($app): BacklogClient {
+            /** @var ConfigRepository $config */
+            $config = $app->make(ConfigRepository::class);
+
+            return new BacklogClient(
+                http: $app->make(HttpFactory::class),
+                baseUrl: rtrim((string) $config->get('backlog.base_url'), '/'),
+                apiKey: (string) $config->get('backlog.api_key'),
+                connectTimeout: (int) $config->get('backlog.timeout.connect'),
+                requestTimeout: (int) $config->get('backlog.timeout.request'),
+                logger: $app->make(LoggerInterface::class),
+            );
+        });
+
+        $this->app->singleton(IssueListPaginator::class, function ($app): IssueListPaginator {
+            /** @var ConfigRepository $config */
+            $config = $app->make(ConfigRepository::class);
+
+            return new IssueListPaginator(
+                client: $app->make(BacklogClient::class),
+                pageSize: (int) $config->get('backlog.pagination.count'),
+                maxPages: (int) $config->get('backlog.pagination.max_pages'),
+            );
+        });
+
+        $this->app->singleton(ProjectConfigurationRepository::class, function ($app): ProjectConfigurationRepository {
+            /** @var ConfigRepository $config */
+            $config = $app->make(ConfigRepository::class);
+
+            /** @var array<string, array{id: mixed, name: string}> $customFields */
+            $customFields = (array) $config->get('backlog.custom_fields', []);
+
+            return new ProjectConfigurationRepository(
+                client: $app->make(BacklogClient::class),
+                configuredProjectKey: (string) $config->get('backlog.project_key'),
+                requiredProjectKey: (string) $config->get('backlog.required_project_key'),
+                customFields: $customFields,
+                textCustomFieldTypeId: (int) $config->get('backlog.custom_field_text_type_id'),
+                doneStatusId: $config->get('backlog.done_status_id'),
+                registryIssueTypeId: $config->get('backlog.registry_issue_type_id'),
+                registryPriorityId: $config->get('backlog.registry_priority_id'),
+            );
+        });
+
+        $this->app->singleton(RuntimeConfigurationChecker::class, function ($app): RuntimeConfigurationChecker {
+            return new RuntimeConfigurationChecker(
+                config: $app->make(ConfigRepository::class),
+                // docs/design.md §4: contracts/terraria/<version>/items.json が正本。
+                contractsCatalogPath: dirname($app->basePath()).'/contracts/terraria',
+            );
+        });
+    }
+}
