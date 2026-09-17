@@ -8,6 +8,7 @@ use App\Domain\Snapshot\SnapshotNotification;
 use App\Domain\Snapshot\SnapshotResult;
 use App\Domain\Snapshot\WorldKey;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
@@ -47,6 +48,35 @@ final class SnapshotNotificationTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         SnapshotNotification::toPlayers([], 'hello');
+    }
+
+    /**
+     * @return array<string, array{0: list<mixed>}>
+     */
+    public static function invalidPlayerNameLists(): array
+    {
+        return [
+            'integer element' => [['player1', 42]],
+            'null element' => [['player1', null]],
+            'boolean element' => [[true]],
+            'array element' => [['player1', ['player2']]],
+            'empty string element' => [['player1', '']],
+        ];
+    }
+
+    /**
+     * @param  list<mixed>  $playerNames
+     */
+    #[Test]
+    #[DataProvider('invalidPlayerNameLists')]
+    public function a_player_notification_rejects_recipients_that_are_not_usable_names(array $playerNames): void
+    {
+        // contracts/snapshot-response-v1.schema.json: playerNames.items.type = "string"。
+        // 以前は「空配列でないこと」しか見ておらず、schema 違反の response を組み立てられた。
+        $this->expectException(InvalidArgumentException::class);
+
+        // Adapter 由来の値がここまで来る想定で、宣言型に反する入力を意図的に渡す。
+        SnapshotNotification::toPlayers($playerNames, 'hello');
     }
 
     #[Test]

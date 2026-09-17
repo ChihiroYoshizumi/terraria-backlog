@@ -32,6 +32,18 @@ final readonly class SnapshotNotification
             throw new InvalidArgumentException('audience=players requires at least one player name.');
         }
 
+        foreach ($playerNames as $name) {
+            // contracts/snapshot-response-v1.schema.json: playerNames.items.type = "string"。
+            if (! is_string($name)) {
+                throw new InvalidArgumentException('audience=players requires every player name to be a string.');
+            }
+
+            // 空文字は Adapter が誰にも届けられない宛先なので、response を組み立てる前に弾く。
+            if ($name === '') {
+                throw new InvalidArgumentException('audience=players requires every player name to be non-empty.');
+            }
+        }
+
         return new self(NotificationAudience::Players, self::assertMessage($message), array_values($playerNames));
     }
 
