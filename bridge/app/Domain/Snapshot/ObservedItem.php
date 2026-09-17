@@ -41,24 +41,31 @@ final readonly class ObservedItem
     }
 
     /**
-     * 構造レベルで有効な Item の `type`。無効な Item では呼べない。
+     * 有効な Item の `type`。無効な Item では呼べない。
+     *
+     * `is_int()` だけでは不十分。reject 理由を 1 つでも持つ Item
+     * (例: `stack` が 0 で {@see ItemRejectionReason::StackNotPositive}) は
+     * 後段の判定材料にしてはならないため、accepted でなければ必ず throw する。
      */
     public function type(): int
     {
-        if (! is_int($this->rawType)) {
-            throw new LogicException('ObservedItem::type() is only available for structurally valid items.');
+        if (! $this->isAccepted() || ! is_int($this->rawType)) {
+            throw new LogicException('ObservedItem::type() is only available for accepted items.');
         }
 
         return $this->rawType;
     }
 
     /**
-     * 構造レベルで有効な Item の `stack`。無効な Item では呼べない。
+     * 有効な Item の `stack`。無効な Item では呼べない。
+     *
+     * {@see type()} と同じ理由で accepted かどうかを見る。`is_int()` だけだと
+     * `stack: 0` や `stack: -1` の生値を返してしまう。
      */
     public function stack(): int
     {
-        if (! is_int($this->rawStack)) {
-            throw new LogicException('ObservedItem::stack() is only available for structurally valid items.');
+        if (! $this->isAccepted() || ! is_int($this->rawStack)) {
+            throw new LogicException('ObservedItem::stack() is only available for accepted items.');
         }
 
         return $this->rawStack;

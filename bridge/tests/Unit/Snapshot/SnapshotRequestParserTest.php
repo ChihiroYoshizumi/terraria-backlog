@@ -10,6 +10,7 @@ use App\Domain\Snapshot\SnapshotRejectedException;
 use App\Domain\Snapshot\SnapshotRejectionCode;
 use App\Domain\Snapshot\SnapshotRequestParser;
 use App\Domain\Snapshot\SnapshotValidationSettings;
+use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -150,6 +151,105 @@ final class SnapshotRequestParserTest extends TestCase
         $item = $snapshot->collectionChests[0]->items[0];
         $this->assertFalse($item->isAccepted());
         $this->assertSame([ItemRejectionReason::StackNotInteger], $item->rejections);
+    }
+
+    /**
+     * @return array<string, array{0: int|string}>
+     */
+    public static function nonPositiveStacks(): array
+    {
+        return [
+            'stack 0' => [0],
+            'stack -5' => [-5],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('nonPositiveStacks')]
+    public function a_rejected_item_never_exposes_its_raw_stack(int $stack): void
+    {
+        // `is_int()` だけを見ていた頃は stack_not_positive で reject 済みの Item でも
+        // stack() が 0 / -5 をそのまま返し、docblock の契約に反していた。
+        $json = $this->body([
+            'collectionChests' => [
+                ['x' => 1, 'y' => 2, 'name' => 'BACKLOG_COLLECTION', 'items' => [['type' => 1326, 'stack' => $stack]]],
+            ],
+        ]);
+
+        $item = $this->parser()->parse(self::WORLD_KEY, $json)->collectionChests[0]->items[0];
+
+        $this->assertFalse($item->isAccepted());
+        $this->assertSame([ItemRejectionReason::StackNotPositive], $item->rejections);
+
+        $this->expectException(LogicException::class);
+        $item->stack();
+    }
+
+    #[Test]
+    public function a_rejected_item_never_exposes_its_raw_type(): void
+    {
+        // type 自体は integer でも、同じ Item の他の理由で reject されていれば読めない。
+        $json = $this->body([
+            'collectionChests' => [
+                ['x' => 1, 'y' => 2, 'name' => 'BACKLOG_COLLECTION', 'items' => [['type' => 1326, 'stack' => 0]]],
+            ],
+        ]);
+
+        $item = $this->parser()->parse(self::WORLD_KEY, $json)->collectionChests[0]->items[0];
+
+        $this->expectException(LogicException::class);
+        $item->type();
+    }
+
+    #[Test]
+    public function a_task04_catalog_rejection_closes_the_value_accessors(): void
+    {
+        $json = $this->body([
+            'collectionChests' => [
+                ['x' => 1, 'y' => 2, 'name' => 'BACKLOG_COLLECTION', 'items' => [['type' => 1326, 'stack' => 1]]],
+            ],
+        ]);
+
+        $item = $this->parser()->parse(self::WORLD_KEY, $json)->collectionChests[0]->items[0];
+        $this->assertSame(1326, $item->type());
+
+        $this->expectException(LogicException::class);
+        $item->withRejection(ItemRejectionReason::TypeNotInCatalog)->type();
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function calendarInvalidObservedAt(): array
+    {
+        return [
+            '2026-02-30' => ['2026-02-30T10:00:00+00:00'],
+            '2025-02-29 (not a leap year)' => ['2025-02-29T10:00:00+09:00'],
+            'month 13' => ['2026-13-01T10:00:00Z'],
+            'day 32' => ['2026-01-32T10:00:00+00:00'],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('calendarInvalidObservedAt')]
+    public function it_rejects_an_observed_at_that_only_normalizes_into_a_real_date(string $observedAt): void
+    {
+        // DateTimeImmutable は例外を投げず 2026-03-02 へ繰り上げてしまうため、
+        // getLastErrors() の warning まで見ないと通り抜ける。
+        try {
+            $this->parser()->parse(self::WORLD_KEY, $this->body(['observedAt' => $observedAt]));
+            $this->fail('expected the snapshot to be rejected');
+        } catch (SnapshotRejectedException $rejection) {
+            $this->assertSame(SnapshotRejectionCode::InvalidObservedAt, $rejection->rejectionCode);
+        }
+    }
+
+    #[Test]
+    public function a_real_date_time_still_passes_after_the_calendar_check(): void
+    {
+        $snapshot = $this->parser()->parse(self::WORLD_KEY, $this->body(['observedAt' => '2028-02-29T10:00:00+09:00']));
+
+        $this->assertSame('2028-02-29T10:00:00+09:00', $snapshot->observedAt->format('Y-m-d\TH:i:sP'));
     }
 
     #[Test]
