@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Application\SynchronizeMappedIssues;
 use App\Console\Commands\Support\RuntimeConfigurationChecker;
+use App\Domain\Mapping\MappingRepository;
 use App\Domain\Registry\RegistryRepository;
 use App\Infrastructure\Backlog\BacklogClient;
+use App\Infrastructure\Backlog\BacklogMappingRepository;
 use App\Infrastructure\Backlog\BacklogRegistryRepository;
 use App\Infrastructure\Backlog\IssueListPaginator;
 use App\Infrastructure\Backlog\ProjectConfigurationRepository;
@@ -90,6 +93,23 @@ final class BacklogServiceProvider extends ServiceProvider
                 paginator: $app->make(IssueListPaginator::class),
                 client: $app->make(BacklogClient::class),
                 locks: $app->make(CrossProcessLockFactory::class),
+                logger: $app->make(LoggerInterface::class),
+            );
+        });
+
+        // docs/design.md §11, §19.1: Mapping も実体 (Backlog Issue) を Domain から隠す。
+        $this->app->singleton(MappingRepository::class, function ($app): MappingRepository {
+            return new BacklogMappingRepository(
+                projects: $app->make(ProjectConfigurationRepository::class),
+                paginator: $app->make(IssueListPaginator::class),
+                client: $app->make(BacklogClient::class),
+                logger: $app->make(LoggerInterface::class),
+            );
+        });
+
+        $this->app->singleton(SynchronizeMappedIssues::class, function ($app): SynchronizeMappedIssues {
+            return new SynchronizeMappedIssues(
+                mappings: $app->make(MappingRepository::class),
                 logger: $app->make(LoggerInterface::class),
             );
         });
