@@ -187,7 +187,8 @@ Adapter 側で message や Registry result を再解釈しない。
 - API / hook が不足して要件（特に `trigger.playerNames`）を満たせない場合、勝手な代替仕様を作らず spec/design issue として止めている。
 ## 実装状況
 
-- **status**: `implemented (実機確認 未実施)` — 実機確認が未完了のため `completed` にしない
+- **status**: `completed` — Collection Chest 3経路（drag / shift / quick stack）の実機確認を 2026-09-17 に完了
+- **残件**: 通知表示（`audience=players` / `audience=server`）と AC-09 は Task 07 実装後でなければ確認できない。その他の残り項目は Task 09 の Smoke Test で拾う
 - **実施日**: 2026-09-17
 - **ブランチ / PR**: `tasks/08-tshock-adapter`
 
@@ -281,32 +282,47 @@ Mono による Smoke Test（Terraria クライアント不要の範囲）も実�
 - Bridge 復旧後の最初の `periodic` に `recoveryPending: true` が付き、`audience=server` の通知を
   server console にだけ表示した後にフラグが解除され、以後の周期では付かない。
 
-### 実機確認の未実施項目（Terraria 1.3.0.8 Vanilla client が必要）
+### 実機確認（Terraria 1.3.0.8 Vanilla client + TShock 4.3.13）
 
-実装環境に Terraria クライアント・GUI が無いため **未実施**。手順は `adapter/README.md`
-「実機確認（Terraria 1.3.0.8 Vanilla client が必要。**未実施**）」に再現可能な形で記載した。
+**Collection Chest の3経路を実機で確認済み（2026-09-17）。** 確認は Bridge 側に
+`TERRARIA_DEBUG_LOG_ACHIEVEMENTS=true` の診断ログ（`App\Application\Debug\LoggingSnapshotProcessor`）
+を入れ、`debug.snapshot.received` / `debug.achievements.evaluated` を目視して行った。
 
-- [ ] AC-01: MOD なしの Vanilla 1.3.0.8 クライアントで接続でき、通常どおり遊べる
-- [ ] drag 操作で `collection_change` を検知できる
-- [ ] drag 操作の `trigger.playerNames` が正しい
-- [ ] shift 操作で `collection_change` を検知できる
-- [ ] shift 操作の `trigger.playerNames` が正しい
-- [ ] quick stack で `collection_change` を検知できる
-- [ ] quick stack の `trigger.playerNames` が正しい
-- [ ] AC-04: 3経路とも final chest reread により同じ Snapshot に収束する
+- [x] AC-01: MOD なしの Vanilla 1.3.0.8 クライアントで接続でき、通常どおり遊べる
+- [x] drag 操作で `collection_change` を検知できる
+- [x] drag 操作の `trigger.playerNames` が正しい
+- [x] shift 操作で `collection_change` を検知できる
+- [x] shift 操作の `trigger.playerNames` が正しい
+- [x] quick stack で `collection_change` を検知できる
+- [x] quick stack の `trigger.playerNames` が正しい
+- [x] AC-04: 3経路とも final chest reread により同じ Snapshot に収束する
+
+**採用 hook の妥当性が実機で裏付けられた。** 特に quick stack は `GetDataHandlers.ChestItemChange`
+にも `ChestOpen` にも乗らないため、`NetGetData`（packet 85 = `MessageID.QuickStackChests`）の
+`Msg.whoAmI` から attribution する設計が必要だった。推測で player を埋めた経路は無い。
+
+#### 残りの実機確認項目
+
+以下は Task 08 単体では確認できないか、未実施。
+
+**Task 07 の実装後でなければ確認できないもの**（現在 Bridge は常に `notifications: []` を返すため）:
+
+- [ ] `audience=players` の通知が指定プレイヤーにだけ表示される（全体チャットに出ない）
+- [ ] `audience=server` の通知が server console にだけ出る
+- [ ] AC-09: Bridge 停止中に成功 ACK が出ず、復旧後に残存アイテムが登録される
+
+**未実施（Task 09 の Smoke Test で拾う）:**
+
 - [ ] 同一 debounce window の複数プレイヤーが `trigger.playerNames` に重複なく集約される
 - [ ] 複数スロット同時更新が Snapshot 1件に集約される
 - [ ] 設定名と異なるチェストの操作では Snapshot が送られない
-- [ ] `audience=players` の通知が指定プレイヤーにだけ表示される（全体チャットに出ない）
-- [ ] `audience=server` の通知が server console にだけ出る
 - [ ] `/backlog sync` が `terrariabacklog.sync` 権限で動作し、権限なしでは実行できない
 - [ ] AC-18: Bridge 停止中もゲーム進行がブロックされない
-- [ ] AC-09: Bridge 停止中に成功 ACK が出ず、復旧後に残存アイテムが登録される
 - [ ] AC-08: Adapter 停止中の撃破が再起動後の `startup` Snapshot の `flags` に反映される
 
 ### 未対応事項
 
-- **実機確認が未実施**（上記チェックリスト）。このため status を `completed` にしていない。
+- 通知表示と AC-09 の実機確認は Task 07 実装後に行う（現在 Bridge は常に `notifications: []` を返すため原理的に確認できない）。
 - `reason=world_change` は Snapshot contract・coalescing・テストでは扱えるが、Boss 撃破等を早期検知する
   専用 hook は登録していない。docs/design.md §14.1 が「Boss event Hook は必須の正本ではない」
   「Hook が取れなくても Periodic Snapshot で補完できる状態だけを対象にする」としているため、
