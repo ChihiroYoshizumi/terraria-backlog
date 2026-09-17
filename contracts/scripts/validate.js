@@ -35,9 +35,9 @@ const cases = [
     data: "examples/snapshot-response-v1.json",
   },
   {
-    label: "terraria 1.4.5.6 items catalog",
+    label: "terraria 1.3.0.8 items catalog",
     schema: "items-v1.schema.json",
-    data: "terraria/1.4.5.6/items.json",
+    data: "terraria/1.3.0.8/items.json",
   },
 ];
 
@@ -73,7 +73,7 @@ if (responseSchema.additionalProperties !== false) {
 
 // items catalog は PHP が type(=id) をキーに maxStack を引く前提 (docs/design.md:212, §6.4)。
 // uniqueItems はオブジェクト全体の一致しか見ないため、id の重複はここで検出する。
-const itemsCatalog = loadJson("terraria/1.4.5.6/items.json");
+const itemsCatalog = loadJson("terraria/1.3.0.8/items.json");
 const seenItemIds = new Set();
 const duplicateItemIds = new Set();
 for (const item of itemsCatalog.items ?? []) {

@@ -41,7 +41,7 @@ dotnet build "${REPO_ROOT}/adapter/TerrariaBacklog.Adapter.csproj" \
   -c "${CONFIGURATION}" \
   -p:TShockServerDir="${TSHOCK_DIR}"
 
-BUILD_OUTPUT_DIR="${REPO_ROOT}/adapter/bin/${CONFIGURATION}/net9.0"
+BUILD_OUTPUT_DIR="${REPO_ROOT}/adapter/bin/${CONFIGURATION}/net45"
 PLUGIN_DLL="${BUILD_OUTPUT_DIR}/TerrariaBacklog.Adapter.dll"
 
 if [[ ! -f "${PLUGIN_DLL}" ]]; then

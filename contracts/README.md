@@ -9,11 +9,15 @@ snapshot-response-v1.schema.json  Bridge -> Adapter の response (docs/design.md
 items-v1.schema.json              contracts/terraria/<version>/items.json の形式
 examples/snapshot-v1.json         request の例
 examples/snapshot-response-v1.json response の例
-terraria/1.4.5.6/items.json       採用 Terraria version の Item catalog (id/name/maxStack)
+terraria/1.3.0.8/items.json       採用 Terraria version の Item catalog (id/name/maxStack)
 ```
 
-`terraria/1.4.5.6/items.json` は Task 01 時点では最小限のプレースホルダー
+`terraria/1.3.0.8/items.json` は Task 01 時点では最小限のプレースホルダー
 （`Dirt Block` / `Stone Block` / `Rod of Discord` のみ）であり、Task 04 が実データへ拡張する。
+
+採用 Terraria version の正本は `docs/design.md` §2.3。バージョンを変更した場合は
+`terraria/<version>/` ディレクトリ名・`items.json` の `terrariaVersion`・`scripts/validate.js`
+の参照パス・`examples/snapshot-v1.json` の `runtime` を併せて更新する。
 
 ## 検証コマンド
 
@@ -29,5 +33,5 @@ npm run validate
 - `examples/snapshot-response-v1.json` が `snapshot-response-v1.schema.json` に適合する
   （`additionalProperties: false` により Achievement Key / Backlog Issue Key / Registry 結果 /
   Mapping 結果が含まれていないことを保証する）。
-- `terraria/1.4.5.6/items.json` が `items-v1.schema.json` に適合する。
+- `terraria/1.3.0.8/items.json` が `items-v1.schema.json` に適合する。
 - response example に禁止 field（`achievementKey` 等）が存在しない。

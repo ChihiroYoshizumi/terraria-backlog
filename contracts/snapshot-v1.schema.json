@@ -64,6 +64,7 @@
     },
     "flags": {
       "type": "object",
+      "description": "World 進捗フラグ。キー名は対応 Terraria バージョン (docs/design.md §2.3) の Terraria.NPC / Terraria.Main のフィールド名に対応する（例: downedBoss1, hardMode, downedMechBoss1, downedPlantBoss, downedGolemBoss, downedAncientCultist, downedMoonlord）。対応バージョンを変更する場合はフラグの実在を確認する。",
       "additionalProperties": { "type": "boolean" }
     },
     "collectionChests": {
