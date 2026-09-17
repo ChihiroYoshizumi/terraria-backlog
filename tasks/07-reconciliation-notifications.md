@@ -166,3 +166,116 @@ Achievement Key / Issue Key / RegistryResult / MappingResult は response に含
 - AC-09/10/18 の障害復旧シナリオを Feature Test で再現できる。
 - immediate player ACK と recovery server notification の意味がコード/テスト上で分離されている。
 - DB/Outbox 無しという仕様範囲を超える保証を追加していない。
+---
+
+## 実装状況
+
+- **status**: 完了
+- **実施日**: 2026-09-17
+- **ブランチ**: `tasks/07-reconciliation-notifications`
+
+### 実施内容
+
+#### 1. `ProcessWorldSnapshot`（`bridge/app/Application/ProcessWorldSnapshot.php`）
+
+`SnapshotProcessor` を実装し、docs/design.md §12 の順序どおりに orchestrate する。
+
+1. Achievement 評価（`EvaluateAchievements`。不正 Item は候補から外れるだけ）
+2. Registry scan（`RegistryRepository::loadIndex()` を **Snapshot ごとに1回**）
+3. Mapping scan（`MappingRepository::loadIncompleteIndex()` を **Snapshot ごとに1回**）
+4. Achievement ごとに `ensureRegistered()`
+5. `isPersisted()` が true のものだけを保存確認済み set に残す
+6. `SynchronizeMappedIssues::synchronizeWithRegistry()` に両 index を渡して join
+7. 対応 Mapping Issue を完了
+8. `BuildNotifications` で通知生成
+9. notification-only response
+
+`startup` / `periodic` / `manual` / `collection_change` / `world_change` はすべてこの
+1 本を通る。reason で分岐するのは手順 8 だけで、その分岐は `BuildNotifications` に閉じている。
+periodic / manual でも毎回 Registry と Mapping を読み直すため、後付け Mapping は
+`/backlog sync` 相当（`reason=manual`）でも即時に反映される。
+
+#### 2. immediate ACK と recovery notification の分離
+
+`BuildNotifications`（`bridge/app/Application/BuildNotifications.php`）に **別メソッド** として置き、
+`ProcessWorldSnapshot` からも別々に呼ぶ。両者は条件・宛先・文言・入力が一切重ならない。
+
+| | `immediatePlayerAcks()` | `recoveryNotifications()` |
+| --- | --- | --- |
+| 契機 | `reason=collection_change` のみ | `reason=periodic` / `manual` のみ |
+| 追加条件 | 対象 Item の Registry 保存確認 | `recoveryPending` かつ再照合が全件成功 |
+| 宛先 | 今回の `trigger.playerNames`（重複排除） | server console 1 件のみ |
+| 文言 | `[Backlog] <Item 名> を登録しました。取り出してOKです。` | `[Backlog] 復旧後の再同期が完了しました。` |
+| 受け取る入力 | `list<ConfirmedItemRegistration>` | `bool $reconciled` のみ |
+
+分離を型でも担保している。`ConfirmedItemRegistration::fromRegistryResult()` は
+**Item Achievement かつ `RegistryResult::isPersisted()` が true** のときしか生成できず、
+保存未確認・duplicate incomplete の fail closed・Boss / World Achievement は ACK 経路へ
+入り込めない。Mapping 完了の成否は ACK 条件に入らない（`CompletionResult` は
+この経路へ渡していない）。
+
+逆に `recoveryNotifications()` は **Item も Player も引数に取らない**。過去の
+`trigger.playerNames` を保存する場所がコード上どこにも無く、item-specific ACK の
+復元は構造的に不可能である。
+
+#### 3. 障害時
+
+- Registry 保存未確認 / duplicate incomplete では ACK を 1 件も出さない。
+- Mapping 更新だけの失敗では Registry を巻き戻さず、ACK も出す（ACK は Registry
+  保存確認だけを意味するため）。次回 reconciliation で課題完了を再試行する。
+- 不正 Item があっても同 Snapshot の Boss / World Registry と Registry→Mapping 同期は継続し、
+  「処理失敗」にも数えない。
+- 再照合を完了できず、返せる通知も無い場合だけ **HTTP 503**（`SnapshotOutcome::RetriableFailure`）を返す
+  （docs/design.md §15.3, §18.2）。Adapter はこれで復旧待ちフラグを立て、次の
+  periodic / manual に `recoveryPending: true` を載せる。response **body** は
+  notification-only のままで、`contracts/snapshot-response-v1.schema.json` は変えていない。
+  `collection_change` の partial failure は成功分の ACK を届けるため 200 を返す。
+
+#### 4. 構造化ログ
+
+`snapshot.received` / `registry.created` / `registry.exists` / `registry.failed` /
+`mapping.index_loaded` / `issue.completed` / `issue.completion_failed` /
+`notification.generated` / `reconciliation.completed` を `request_id` / `world_key` /
+`reason` 付きで出力する。Player Name と秘密情報は出さない（宛先は件数だけ記録）。
+
+#### 5. 暫定デバッグ実装の削除
+
+`LoggingSnapshotProcessor` / `DebugSnapshotLoggingServiceProvider` /
+`bootstrap/providers.php` の登録 / `config/terraria.php` の `debug_log_achievements` を削除した
+（`.env.example` には元から記載が無かった）。`tasks/08-tshock-adapter.md` の参照箇所には
+「Task 07 で削除済み」と追記した。
+
+#### 6. `isDefiniteWriteFailure` の共通化
+
+Task 07 は Backlog へ直接書き込まない（すべて `RegistryRepository` /
+`MappingRepository` 経由）ため 3 つ目のコピーは発生していない。あわせて既存の 2 つを
+`App\Infrastructure\Backlog\Support\WriteFailureClassifier::isDefinite()` へ集約した
+（振る舞いは不変）。
+
+### 検証結果
+
+| コマンド | 結果 |
+| --- | --- |
+| `cd bridge && PAO_DISABLE=1 ./vendor/bin/phpunit` | OK (480 tests, 1445 assertions) |
+| `cd bridge && ./vendor/bin/pint --test` | passed |
+| `cd contracts && npm run validate` | OK（5 件すべて） |
+
+追加テスト: `tests/Unit/Application/ProcessWorldSnapshotTest.php`（22 件、fake repository）と
+`tests/Feature/Snapshot/SnapshotReconciliationTest.php`（7 件、HTTP endpoint から
+`Http::fake()` の Backlog まで通す end-to-end）。実 Backlog へは接続しない。
+
+主要テストは実装を一時的に壊して落ちることを確認した（確認後に復元済み）。
+
+- ACK の `isPersisted()` ガードを外す → 3 件失敗（保存失敗 / fail closed / partial failure）
+- item ACK の `collection_change` 限定を外す → 6 件失敗（復旧通知の分離テストを含む）
+- recovery notification の「全件成功」条件を外す → 部分失敗テストが失敗
+- response に `achievementKeys` を足す → 7 件失敗
+- 完了済み Mapping の除外を外す → repeated reconciliation テストが失敗
+
+### 未対応事項
+
+- 通常の `periodic` / `world_change` で Registry 書き込みが部分失敗した場合、
+  `recoveryPending` が立っていなければ復旧通知の契機にはならない。これは
+  docs/design.md §15.2 の表どおりの挙動（復旧待ちフラグは Adapter が持つ）。
+- `docs/design.md §13.3` が許容する「短い transient retry を1回まで」は実装していない。
+  Task 03 の `BacklogClient` に自動 retry が無く、Task 07 では追加しなかった。

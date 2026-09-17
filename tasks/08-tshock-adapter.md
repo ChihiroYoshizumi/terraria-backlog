@@ -284,9 +284,11 @@ Mono による Smoke Test（Terraria クライアント不要の範囲）も実�
 
 ### 実機確認（Terraria 1.3.0.8 Vanilla client + TShock 4.3.13）
 
-**Collection Chest の3経路を実機で確認済み（2026-09-17）。** 確認は Bridge 側に
-`TERRARIA_DEBUG_LOG_ACHIEVEMENTS=true` の診断ログ（`App\Application\Debug\LoggingSnapshotProcessor`）
+**Collection Chest の3経路を実機で確認済み（2026-09-17）。** 確認当時は Bridge 側に
+`TERRARIA_DEBUG_LOG_ACHIEVEMENTS=true` の暫定的な診断ログ（`App\Application\Debug\LoggingSnapshotProcessor`）
 を入れ、`debug.snapshot.received` / `debug.achievements.evaluated` を目視して行った。
+この暫定実装は Task 07 で削除済みで、同等以上の情報は `ProcessWorldSnapshot` の
+構造化ログ（`snapshot.received` / `registry.created` / `reconciliation.completed` 等）から得られる。
 
 - [x] AC-01: MOD なしの Vanilla 1.3.0.8 クライアントで接続でき、通常どおり遊べる
 - [x] drag 操作で `collection_change` を検知できる
