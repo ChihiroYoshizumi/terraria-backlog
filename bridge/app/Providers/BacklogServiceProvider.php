@@ -71,6 +71,8 @@ final class BacklogServiceProvider extends ServiceProvider
             return new RuntimeConfigurationChecker(
                 config: $app->make(ConfigRepository::class),
                 // docs/design.md §4: contracts/terraria/<version>/items.json が正本。
+                // 通常は config('item_catalog.base_path') が優先され、これは
+                // config/item_catalog.php ごと欠けている場合の最終 fallback。
                 contractsCatalogPath: dirname($app->basePath()).'/contracts/terraria',
             );
         });

@@ -255,7 +255,7 @@ final class TerrariaDoctorCommandTest extends TestCase
     #[Test]
     public function it_fails_when_the_item_catalog_is_missing(): void
     {
-        config()->set('terraria.item_catalog_path', base_path('tests/__no_such_catalog__'));
+        config()->set('item_catalog.base_path', base_path('tests/__no_such_catalog__'));
         $this->fakeHealthyBacklog();
 
         [$exitCode, $output] = $this->runDoctor();

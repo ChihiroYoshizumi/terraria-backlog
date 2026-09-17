@@ -176,6 +176,40 @@ final class RuntimeConfigurationCheckerTest extends TestCase
     }
 
     #[Test]
+    public function it_resolves_the_catalog_from_the_item_catalog_config(): void
+    {
+        // 評価側 (AchievementServiceProvider) が読むのと同じ config を doctor も見る。
+        $this->writeCatalog($this->validCatalog());
+
+        $config = new ConfigRepository([
+            'terraria' => $this->validConfig(),
+            'item_catalog' => ['base_path' => $this->catalogRoot],
+        ]);
+
+        // 注入された fallback は存在しないパスにしておき、config 側が使われることを示す。
+        $report = (new RuntimeConfigurationChecker($config, $this->catalogRoot.'-absent'))->check();
+
+        $this->assertTrue($this->checkNamed($report, 'terraria.item_catalog')->isSatisfied());
+    }
+
+    #[Test]
+    public function it_fails_when_the_configured_catalog_is_missing_even_if_the_fallback_has_one(): void
+    {
+        // 回帰: doctor が config を無視して fallback を検証すると、運用で実際に
+        // 読まれる catalog が壊れていても OK を返してしまう。
+        $this->writeCatalog($this->validCatalog());
+
+        $config = new ConfigRepository([
+            'terraria' => $this->validConfig(),
+            'item_catalog' => ['base_path' => $this->catalogRoot.'-absent'],
+        ]);
+
+        $report = (new RuntimeConfigurationChecker($config, $this->catalogRoot))->check();
+
+        $this->assertFalse($this->checkNamed($report, 'terraria.item_catalog')->isSatisfied());
+    }
+
+    #[Test]
     public function the_repository_contract_catalog_matches_the_supported_runtime(): void
     {
         // docs/design.md §2.3 の正本と contracts/terraria/<version>/items.json の整合。
