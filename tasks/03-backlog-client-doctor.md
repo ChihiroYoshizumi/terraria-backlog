@@ -154,8 +154,8 @@ Backlog API への接続と運用設定の検証を PHP 側に集約し、誤設
 
 ### 未対応事項 / 申し送り
 
-- **Task 02 / Task 04 が所有する設定への依存**: doctor は `config('terraria.allowed_world_keys')` / `config('terraria.collection_chest_name')` / `config('terraria.supported_runtime')` / `config('terraria.item_catalog_path')`（任意）を **読むだけ** とし、本 Task では `bridge/config/terraria.php` を作成していない。config が丸ごと存在しない場合も例外を出さず NG として報告する。キー名が Task 02 / 04 の実装と異なる場合は `RuntimeConfigurationChecker` 側を合わせる。
-- `terraria.item_catalog_path` 未設定時は `<repo>/contracts/terraria/<version>/items.json` を参照する。
+- **Task 02 / Task 04 が所有する設定への依存**: doctor は `config('terraria.allowed_world_keys')` / `config('terraria.collection_chest_name')` / `config('terraria.supported_runtime')` / `config('item_catalog.base_path')`（任意）を **読むだけ** とし、本 Task では `bridge/config/terraria.php` を作成していない。config が丸ごと存在しない場合も例外を出さず NG として報告する。キー名が Task 02 / 04 の実装と異なる場合は `RuntimeConfigurationChecker` 側を合わせる。
+- Item catalog のパスは Task 04 実装後に `terraria.item_catalog_path` → `item_catalog.base_path` へ寄せた（評価側 `AchievementServiceProvider` と同じ config を読む）。未設定時は `<repo>/contracts/terraria/<version>/items.json` を参照する。
 - Registry create / update、Mapping 完了更新、Achievement 判定は Task 05 / 06 のスコープとして未実装。`BacklogClient`（`get()` のみ公開）は write 用メソッドを持たない。Task 05 で `post()` / `patch()` を同じ例外方針で追加する。
 - docs/design.md §13.3 の「短い transient retry を1回まで」は任意項目のため未実装。ゲーム側を待たせないことを優先し、失敗は次の periodic / manual reconciliation に委ねる。
 - 後続 Task が使う interface:

@@ -11,15 +11,14 @@ use Illuminate\Contracts\Config\Repository as ConfigRepository;
 /**
  * Backlog API を使わないローカル設定の検証 (docs/design.md §2.3, §5.2, §9.4)。
  *
- * ここで読む `config('terraria.*')` は Task 02 / Task 04 が所有する設定である。
- * 本 Task では `config/terraria.php` を作成しない。設定が存在しない場合は
+ * ここで読む設定は Task 02 / Task 04 が所有する。設定が存在しない場合は
  * `terraria:doctor` が NG を出して落ちるだけで済むよう、欠損に耐える形で読む。
  *
  * 期待する設定キー:
  * - `terraria.allowed_world_keys`   (TERRARIA_ALLOWED_WORLD_KEYS)
  * - `terraria.collection_chest_name` (TERRARIA_COLLECTION_CHEST_NAME)
  * - `terraria.supported_runtime`    (TERRARIA_SUPPORTED_RUNTIME)
- * - `terraria.item_catalog_path`    (任意。未設定なら contracts/terraria を見る)
+ * - `item_catalog.base_path`        (TERRARIA_ITEM_CATALOG_PATH。未設定なら contracts/terraria を見る)
  */
 final class RuntimeConfigurationChecker
 {
@@ -185,18 +184,19 @@ final class RuntimeConfigurationChecker
         return ConfigurationCheck::ok($name, sprintf('Terraria %s: %d 件。', $terrariaVersion, count($items)));
     }
 
+    /**
+     * 評価側 (`JsonFileItemCatalogRepository::pathFor()`) と同じ base path・
+     * 同じ組み立て規則で解決する。ここがズレると doctor が「運用で実際に読む
+     * catalog」とは別のファイルを検証したまま OK を返してしまう。
+     */
     private function resolveCatalogPath(string $terrariaVersion): string
     {
-        $configured = $this->config->get('terraria.item_catalog_path');
+        $configured = $this->config->get('item_catalog.base_path');
 
-        if (is_string($configured) && trim($configured) !== '') {
-            $configured = rtrim(trim($configured), '/');
+        $basePath = is_string($configured) && trim($configured) !== ''
+            ? trim($configured)
+            : $this->contractsCatalogPath;
 
-            return str_ends_with($configured, '.json')
-                ? $configured
-                : $configured.'/'.$terrariaVersion.'/items.json';
-        }
-
-        return rtrim($this->contractsCatalogPath, '/').'/'.$terrariaVersion.'/items.json';
+        return rtrim($basePath, '/').'/'.$terrariaVersion.'/items.json';
     }
 }
