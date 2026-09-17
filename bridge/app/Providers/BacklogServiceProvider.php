@@ -5,9 +5,13 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Console\Commands\Support\RuntimeConfigurationChecker;
+use App\Domain\Registry\RegistryRepository;
 use App\Infrastructure\Backlog\BacklogClient;
+use App\Infrastructure\Backlog\BacklogRegistryRepository;
 use App\Infrastructure\Backlog\IssueListPaginator;
 use App\Infrastructure\Backlog\ProjectConfigurationRepository;
+use App\Infrastructure\Lock\CrossProcessLockFactory;
+use App\Infrastructure\Lock\FileLockFactory;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
@@ -64,6 +68,29 @@ final class BacklogServiceProvider extends ServiceProvider
                 doneStatusId: $config->get('backlog.done_status_id'),
                 registryIssueTypeId: $config->get('backlog.registry_issue_type_id'),
                 registryPriorityId: $config->get('backlog.registry_priority_id'),
+            );
+        });
+
+        // docs/design.md §10.5: Registry 書き込みの cross-process file lock。
+        $this->app->singleton(CrossProcessLockFactory::class, function ($app): CrossProcessLockFactory {
+            /** @var ConfigRepository $config */
+            $config = $app->make(ConfigRepository::class);
+
+            return new FileLockFactory(
+                directory: (string) $config->get('backlog.registry_lock.directory'),
+                timeoutSeconds: (float) $config->get('backlog.registry_lock.timeout'),
+            );
+        });
+
+        // docs/design.md §19.1: Domain 側は Registry の実体が Backlog Issue で
+        // あることに依存しない。差し替え点を interface に固定する。
+        $this->app->singleton(RegistryRepository::class, function ($app): RegistryRepository {
+            return new BacklogRegistryRepository(
+                projects: $app->make(ProjectConfigurationRepository::class),
+                paginator: $app->make(IssueListPaginator::class),
+                client: $app->make(BacklogClient::class),
+                locks: $app->make(CrossProcessLockFactory::class),
+                logger: $app->make(LoggerInterface::class),
             );
         });
 
