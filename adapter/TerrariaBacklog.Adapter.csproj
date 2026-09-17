@@ -10,15 +10,9 @@
     <LangVersion>latest</LangVersion>
     <!-- TShock/TerrariaServer/OTAPI は ServerPlugins から実行時に解決されるため出力にコピーしない。 -->
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
-
-    <!--
-      TShock の配布物（サーバー本体 / DLL）はリポジトリにコミットしない。
-      `scripts/setup-tshock.sh` が対応バージョン (6.1.0 / Terraria 1.4.5.6) の
-      配布物をこのディレクトリ（既定: リポジトリ直下の .tshock-server/）に展開する。
-      別の場所に展開した場合は `-p:TShockServerDir=/path/to/tshock` でビルド時に上書きできる。
-    -->
-    <TShockServerDir Condition="'$(TShockServerDir)' == ''">$(MSBuildThisFileDirectory)../.tshock-server</TShockServerDir>
   </PropertyGroup>
+
+  <!-- TShockServerDir と参照 DLL の存在チェックは adapter/Directory.Build.props で共通定義する。 -->
 
   <!-- Tests/ は別 csproj (TerrariaBacklog.Adapter.Tests) を持つため、既定の glob から除外する。 -->
   <ItemGroup>
@@ -41,12 +35,5 @@
       <Private>false</Private>
     </Reference>
   </ItemGroup>
-
-  <!-- 参照 DLL が未取得の場合、意味の分かるエラーで止める。 -->
-  <Target Name="EnsureTShockReferencesExist" BeforeTargets="BeforeBuild;BeforeCompile;CoreCompile">
-    <Error
-      Condition="!Exists('$(TShockServerDir)/bin/TerrariaServer.dll') Or !Exists('$(TShockServerDir)/bin/OTAPI.dll') Or !Exists('$(TShockServerDir)/ServerPlugins/TShockAPI.dll')"
-      Text="TShock reference assemblies not found under '$(TShockServerDir)'. Run scripts/setup-tshock.sh first (see adapter/README.md), or pass -p:TShockServerDir=/path/to/tshock-server." />
-  </Target>
 
 </Project>

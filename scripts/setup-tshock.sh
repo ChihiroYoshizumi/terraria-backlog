@@ -20,10 +20,13 @@
 #
 set -euo pipefail
 
+# 対応バージョンの正本は docs/design.md §2.3。ここを変更する場合は
+# docs/design.md §2.3 と各 README の記載も併せて更新する。
 TSHOCK_VERSION="6.1.0"
 TERRARIA_VERSION="1.4.5.6"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST_DIR="${REPO_ROOT}/.tshock-server"
+DEFAULT_DEST_DIR="${REPO_ROOT}/.tshock-server"
+DEST_DIR="${DEFAULT_DEST_DIR}"
 CACHE_DIR="${REPO_ROOT}/.tshock-cache"
 FORCE=0
 OS_OVERRIDE=""
@@ -123,14 +126,31 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 echo "Extracting ${ASSET_NAME} ..."
 unzip -q "${ZIP_PATH}" -d "${WORK_DIR}"
 
-# 配布 zip は中に単一の .tar を含む（例: TShock-Beta-<os>-Release.tar）。
+# linux / osx の配布 zip は中に単一の .tar を含む（例: TShock-Beta-<os>-Release.tar）が、
+# win-x64 の配布 zip はサーバーのファイルを直接含む。両方の構造を扱う。
 TAR_FILE="$(find "${WORK_DIR}" -maxdepth 1 -name '*.tar' | head -n 1)"
-if [[ -z "${TAR_FILE}" ]]; then
-  echo "Expected a .tar file inside the release zip but found none." >&2
-  exit 1
+if [[ -n "${TAR_FILE}" ]]; then
+  tar -xf "${TAR_FILE}" -C "${DEST_DIR}"
+else
+  shopt -s dotglob nullglob
+  extracted=("${WORK_DIR}"/*)
+  if [[ ${#extracted[@]} -eq 0 ]]; then
+    echo "Release zip appears to be empty: ${ZIP_PATH}" >&2
+    exit 1
+  fi
+  if [[ ${#extracted[@]} -eq 1 && -d "${extracted[0]}" ]]; then
+    # 単一のトップレベルディレクトリに包まれている場合は、その中身を DEST_DIR 直下へ移す。
+    inner=("${extracted[0]}"/*)
+    if [[ ${#inner[@]} -eq 0 ]]; then
+      echo "Extracted directory is empty: ${extracted[0]}" >&2
+      exit 1
+    fi
+    mv "${inner[@]}" "${DEST_DIR}/"
+  else
+    mv "${extracted[@]}" "${DEST_DIR}/"
+  fi
+  shopt -u dotglob nullglob
 fi
-
-tar -xf "${TAR_FILE}" -C "${DEST_DIR}"
 
 echo ""
 echo "TShock ${TSHOCK_VERSION} (for Terraria ${TERRARIA_VERSION}, ${OS_ASSET}) installed to:"
@@ -142,8 +162,14 @@ echo "  ${DEST_DIR}/bin/TerrariaServer.dll - Adapter build reference"
 echo "  ${DEST_DIR}/bin/OTAPI.dll          - Adapter build reference"
 echo "  ${DEST_DIR}/ServerPlugins/         - drop TerrariaBacklog.Adapter.dll here to load it"
 echo ""
+# 既定以外の場所へ展開した場合、deploy-adapter.sh には --tshock-dir を渡す必要がある。
+DEPLOY_CMD="scripts/deploy-adapter.sh"
+if [[ "${DEST_DIR}" != "${DEFAULT_DEST_DIR}" ]]; then
+  DEPLOY_CMD="scripts/deploy-adapter.sh --tshock-dir \"${DEST_DIR}\""
+fi
+
 echo "Next steps:"
-echo "  1. Build/deploy the Adapter plugin:   scripts/deploy-adapter.sh"
+echo "  1. Build/deploy the Adapter plugin:   ${DEPLOY_CMD}"
 echo "  2. Start the server (manual, see adapter/README.md / root README.md):"
 echo "       cd ${DEST_DIR} && ./TShock.Server -world <worldfile> -autocreate 2"
 echo ""

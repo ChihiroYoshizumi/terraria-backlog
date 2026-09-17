@@ -32,6 +32,10 @@ public class TerrariaBacklogPluginTests
         var attribute = PluginType.GetCustomAttribute<ApiVersionAttribute>();
 
         Assert.NotNull(attribute);
+
+        // TShock 6.1.0 本体が宣言する ServerApi のバージョン (docs/design.md §2.3)。
+        // 値がずれると TShock 側のロード時互換性チェックに掛かるため、属性の有無ではなく値を固定する。
+        Assert.Equal(new Version(2, 1), attribute!.ApiVersion);
     }
 
     [Fact]

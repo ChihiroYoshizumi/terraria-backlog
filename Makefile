@@ -3,7 +3,9 @@
 
 ## Bridge (Laravel / PHP)
 bridge-install:
-	cd bridge && composer install && cp -n .env.example .env || true && php artisan key:generate
+	cd bridge && composer install
+	cd bridge && [ -f .env ] || cp .env.example .env
+	cd bridge && php artisan key:generate
 
 bridge-test:
 	cd bridge && composer test

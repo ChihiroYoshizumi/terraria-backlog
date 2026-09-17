@@ -30,13 +30,30 @@
           "playerNames": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "audience=server の場合は含めない。"
+            "minItems": 1,
+            "description": "audience=players の場合の宛先。audience=server の場合は含めない。"
           },
           "message": {
             "type": "string",
             "minLength": 1
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "audience": { "const": "server" } },
+              "required": ["audience"]
+            },
+            "then": { "not": { "required": ["playerNames"] } }
+          },
+          {
+            "if": {
+              "properties": { "audience": { "const": "players" } },
+              "required": ["audience"]
+            },
+            "then": { "required": ["playerNames"] }
+          }
+        ]
       }
     }
   }

@@ -57,22 +57,38 @@ for (const c of cases) {
   }
 }
 
-// レスポンス contract に Achievement Key / Backlog Issue Key 等が漏れていないことを明示的に確認する。
-const forbiddenResponseKeys = [
-  "achievementKey",
-  "backlogIssueKey",
-  "registryResult",
-  "mappingResult",
-];
-const responseExample = loadJson("examples/snapshot-response-v1.json");
-for (const key of forbiddenResponseKeys) {
-  if (Object.prototype.hasOwnProperty.call(responseExample, key)) {
-    failed = true;
-    console.error(`NG   response example に禁止 field が含まれています: ${key}`);
-  }
+// notification-only 契約は response schema の additionalProperties: false が担保している
+// (docs/design.md §6.5)。example を個別に検査しても schema 検証と重複するだけなので、
+// ここでは「その担保自体が外されていないこと」を検証する。
+const responseSchema = loadJson("snapshot-response-v1.schema.json");
+if (responseSchema.additionalProperties !== false) {
+  failed = true;
+  console.error(
+    "NG   snapshot-response-v1.schema.json の additionalProperties: false が外れています。" +
+      " Achievement Key / Backlog Issue Key / Registry・Mapping 結果の漏洩を防げません。"
+  );
+} else {
+  console.log("OK   response schema enforces notification-only (additionalProperties: false)");
 }
-if (!failed) {
-  console.log("OK   response example is notification-only (no Achievement/Backlog leakage)");
+
+// items catalog は PHP が type(=id) をキーに maxStack を引く前提 (docs/design.md:212, §6.4)。
+// uniqueItems はオブジェクト全体の一致しか見ないため、id の重複はここで検出する。
+const itemsCatalog = loadJson("terraria/1.4.5.6/items.json");
+const seenItemIds = new Set();
+const duplicateItemIds = new Set();
+for (const item of itemsCatalog.items ?? []) {
+  if (seenItemIds.has(item.id)) {
+    duplicateItemIds.add(item.id);
+  }
+  seenItemIds.add(item.id);
+}
+if (duplicateItemIds.size > 0) {
+  failed = true;
+  console.error(
+    `NG   items catalog に重複した id があります: ${[...duplicateItemIds].join(", ")}`
+  );
+} else {
+  console.log("OK   items catalog has unique ids");
 }
 
 process.exit(failed ? 1 : 0);
