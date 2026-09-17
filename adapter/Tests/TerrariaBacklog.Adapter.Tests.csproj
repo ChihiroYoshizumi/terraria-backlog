@@ -20,6 +20,20 @@
     <AdapterAssemblyPath>$(MSBuildThisFileDirectory)../bin/$(Configuration)/net45/TerrariaBacklog.Adapter.dll</AdapterAssemblyPath>
   </PropertyGroup>
 
+  <!--
+    Adapter の「純ロジック層」は TShock / Terraria の型に触れないため、同じソースを
+    net9.0 のテストへも直接コンパイルして普通の unit test を書く。
+
+    TShock API に触れる薄い層は `*.TShock.cs` という命名にしてあり、
+    ここから除外する（net45 / 実サーバーでしか意味を持たないため）。
+    plugin entrypoint も同様に除外する。この2種類だけが MetadataLoadContext による
+    メタデータ検証と実機 Smoke Test の対象になる。
+  -->
+  <ItemGroup>
+    <Compile Include="../**/*.cs"
+             Exclude="../Tests/**/*.cs;../bin/**/*.cs;../obj/**/*.cs;../**/*.TShock.cs;../TerrariaBacklogPlugin.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageReference Include="System.Reflection.MetadataLoadContext" Version="9.0.0" />

@@ -126,13 +126,90 @@ public class TerrariaBacklogPluginTests : IClassFixture<AdapterMetadataFixture>
         // Registry / Mapping を知らない。Task 01 完了条件のうち
         // 「Adapter 側に Achievement Key / Backlog Issue Key 用の型や定数を作っていない」を
         // 自動テストとして固定する。
-        var forbiddenNameFragments = new[] { "Achievement", "BacklogIssue", "Registry", "Mapping" };
-
         var offendingTypes = _fixture.AdapterAssembly.GetTypes()
-            .Where(t => forbiddenNameFragments.Any(f => t.Name.Contains(f, StringComparison.OrdinalIgnoreCase)))
+            .Where(t => ForbiddenNameFragments.Any(f => t.Name.Contains(f, StringComparison.OrdinalIgnoreCase)))
             .Select(t => t.FullName)
             .ToArray();
 
         Assert.True(offendingTypes.Length == 0, $"Unexpected domain types leaked into Adapter: {string.Join(", ", offendingTypes)}");
+    }
+
+    private static readonly string[] ForbiddenNameFragments =
+        ["Achievement", "BacklogIssue", "Registry", "Mapping", "IssueKey"];
+
+    [Fact]
+    public void DoesNotExposeAchievementOrBacklogMembers()
+    {
+        // 型名だけでなく、method / property / field の名前にもドメイン概念を持ち込まない
+        // (docs/design.md §22.4「Achievement Key / Backlog Issue Key を扱う型やロジックが
+        // Adapter に存在しないこと」)。
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic
+            | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+        var offendingMembers = _fixture.AdapterAssembly.GetTypes()
+            .SelectMany(t => t.GetMembers(all).Select(m => $"{t.FullName}.{m.Name}"))
+            .Where(name => ForbiddenNameFragments.Any(f => name.Contains(f, StringComparison.OrdinalIgnoreCase)))
+            .Distinct()
+            .ToArray();
+
+        Assert.True(
+            offendingMembers.Length == 0,
+            $"Unexpected domain members leaked into Adapter: {string.Join(", ", offendingMembers)}");
+    }
+
+    [Fact]
+    public void DoesNotReferenceABacklogApiClient()
+    {
+        // docs/spec.md §4 / docs/design.md §2.2: Adapter は Backlog API を呼ばない。
+        // 参照アセンブリの時点で Backlog / HTTP クライアント SDK を持ち込んでいないことを固定する。
+        var referenced = _fixture.AdapterAssembly.GetReferencedAssemblies()
+            .Select(a => a.Name ?? string.Empty)
+            .ToArray();
+
+        Assert.DoesNotContain(referenced, name => name.Contains("Backlog", StringComparison.OrdinalIgnoreCase));
+
+        // net45 の HTTP は System (HttpWebRequest) だけで足りる。
+        Assert.DoesNotContain(referenced, name =>
+            name.Equals("Newtonsoft.Json", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void RegistersTheManualSyncCommandPermission()
+    {
+        // docs/design.md §7.5: /backlog sync の必要 Permission。
+        // 文字列定数はメタデータからは読めないため、#US heap (UTF-16LE) に
+        // 埋まっていることをバイト列で確認する。
+        var bytes = File.ReadAllBytes(_fixture.AdapterAssembly.Location);
+
+        Assert.True(
+            ContainsUtf16(bytes, "terrariabacklog.sync"),
+            "The adapter assembly does not embed the terrariabacklog.sync permission literal.");
+    }
+
+    private static bool ContainsUtf16(byte[] haystack, string needle)
+    {
+        var pattern = System.Text.Encoding.Unicode.GetBytes(needle);
+
+        for (var i = 0; i + pattern.Length <= haystack.Length; i++)
+        {
+            var matched = true;
+
+            for (var j = 0; j < pattern.Length; j++)
+            {
+                if (haystack[i + j] != pattern[j])
+                {
+                    matched = false;
+
+                    break;
+                }
+            }
+
+            if (matched)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

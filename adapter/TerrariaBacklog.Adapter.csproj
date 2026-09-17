@@ -17,6 +17,8 @@
     <!-- TShock/TerrariaServer は ServerPlugins から実行時に解決されるため出力にコピーしない。 -->
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <!-- Snapshot の runtime.adapterVersion に載る値 (docs/design.md §2.3 / §6.2)。 -->
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <!-- TShockServerDir と参照 DLL の存在チェックは adapter/Directory.Build.props で共通定義する。 -->
