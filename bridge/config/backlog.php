@@ -96,4 +96,26 @@ return [
         'max_pages' => (int) env('BACKLOG_MAX_PAGES', 200),
     ],
 
+    /*
+    | Registry 書き込みの cross-process lock (docs/design.md §10.5)。
+    |
+    | `world_key + achievement_key` 単位の OS file lock (flock) を使う。
+    | 同一ホスト上の全 PHP Worker が同じ directory を共有する必要があるため、
+    | request ごとに変わる場所や tmpfs の個別領域を指定しない。
+    | 永続 DB / 永続 Queue ではなく、消えてよい lock file である。
+    |
+    | 複数ホストへ水平スケールする構成は MVP 非対応
+    | (shared distributed lock を導入するまで禁止)。
+    */
+    'registry_lock' => [
+        'directory' => env('TERRARIA_REGISTRY_LOCK_DIR', storage_path('framework/terraria-registry-locks')),
+
+        /*
+        | 取得待ちの上限秒。Backlog 通信でゲームのメイン処理を待たせないため
+        | 有限で打ち切り、取得できなければ書き込まず failed とする
+        | (docs/spec.md §9, AC-18)。
+        */
+        'timeout' => (float) env('TERRARIA_REGISTRY_LOCK_TIMEOUT', 10),
+    ],
+
 ];
