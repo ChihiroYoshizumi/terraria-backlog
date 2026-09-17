@@ -8,6 +8,7 @@ use App\Domain\Mapping\CompletionFailureReason;
 use App\Domain\Mapping\CompletionStatus;
 use App\Domain\Mapping\MappingIssue;
 use App\Domain\Snapshot\WorldKey;
+use Closure;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;
@@ -244,6 +245,54 @@ final class BacklogMappingCompletionTest extends MappingTestCase
     }
 
     #[Test]
+    public function it_does_not_report_success_when_the_patch_response_is_another_issue(): void
+    {
+        // GET と PATCH の間に remap された / API が別の課題を返した。
+        $this->assertPatchResponseIdentityIsVerified(static fn (array $issue): array => [
+            ...$issue,
+            'id' => 987_654,
+            'issueKey' => self::PROJECT_KEY.'-987654',
+        ]);
+    }
+
+    #[Test]
+    public function it_does_not_report_success_when_the_patch_response_has_another_world_key(): void
+    {
+        $this->assertPatchResponseIdentityIsVerified(
+            fn (array $issue): array => $this->withCustomField($issue, self::WORLD_KEY_FIELD_ID, self::WORLD_B),
+        );
+    }
+
+    #[Test]
+    public function it_does_not_report_success_when_the_patch_response_has_another_terraria_key(): void
+    {
+        $this->assertPatchResponseIdentityIsVerified(
+            fn (array $issue): array => $this->withCustomField($issue, self::ACHIEVEMENT_KEY_FIELD_ID, 'boss:king_slime'),
+        );
+    }
+
+    #[Test]
+    public function it_does_not_throw_when_the_patch_response_body_is_not_an_object(): void
+    {
+        $issueKey = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
+        $mapping = $this->loadMapping('item:1326');
+
+        // 2xx だが body が JSON object ではない。BacklogResponse::object() が投げる
+        // 例外を complete() の外へ漏らすと、後続 Mapping の同期ごと中断する。
+        $this->backlog->interceptNext('PATCH', '/api/v2/issues/', static function (): mixed {
+            return Http::response([], 200);
+        });
+
+        $result = $this->repository()->complete($mapping);
+
+        // 「更新されていない」ではなく「不明」。再取得で確認したうえで結果型を返す。
+        $this->assertSame(CompletionStatus::Failed, $result->status);
+        $this->assertSame(CompletionFailureReason::WriteResultUnknown, $result->reason);
+        $this->assertFalse($this->backlog->isDone($issueKey));
+        $this->assertSame(2, $this->backlog->countRequests('GET', '/api/v2/issues/'.$issueKey));
+    }
+
+    #[Test]
     public function it_completes_a_reopened_issue_again(): void
     {
         $issueKey = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
@@ -277,6 +326,51 @@ final class BacklogMappingCompletionTest extends MappingTestCase
         $this->assertSame(CompletionStatus::Failed, $result->status);
         $this->assertStringNotContainsString(self::API_KEY, (string) $result->detail);
         $this->assertStringNotContainsString(self::API_KEY, json_encode($this->logger->records, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * PATCH が「完了済みに見えるが対象と同一ではない」課題を返したとき、
+     * 応答だけを根拠に completed としないこと。
+     *
+     * @param  Closure(array<string, mixed>): array<string, mixed>  $mutate
+     */
+    private function assertPatchResponseIdentityIsVerified(Closure $mutate): void
+    {
+        $issueKey = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
+        $mapping = $this->loadMapping('item:1326');
+
+        $this->backlog->interceptNext('PATCH', '/api/v2/issues/', static function (FakeMappingBacklog $backlog) use ($mutate): mixed {
+            $completed = $backlog->issues[0];
+            $completed['status'] = ['id' => self::DONE_STATUS_ID, 'name' => '完了'];
+
+            return Http::response($mutate($completed), 200);
+        });
+
+        $result = $this->repository()->complete($mapping);
+
+        $this->assertNotSame(CompletionStatus::Completed, $result->status);
+        $this->assertSame(CompletionStatus::Failed, $result->status);
+        $this->assertSame(CompletionFailureReason::VerificationFailed, $result->reason);
+        $this->assertFalse($result->isDone());
+        // 実際の課題は完了していない。古い Achievement を完了扱いしない。
+        $this->assertFalse($this->backlog->isDone($issueKey));
+    }
+
+    /**
+     * @param  array<string, mixed>  $issue
+     * @return array<string, mixed>
+     */
+    private function withCustomField(array $issue, int $fieldId, string $value): array
+    {
+        /** @var list<array<string, mixed>> $fields */
+        $fields = $issue['customFields'];
+
+        $issue['customFields'] = array_map(
+            static fn (array $field): array => $field['id'] === $fieldId ? [...$field, 'value' => $value] : $field,
+            $fields,
+        );
+
+        return $issue;
     }
 
     /**

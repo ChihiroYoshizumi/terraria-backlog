@@ -168,11 +168,30 @@ final class BacklogMappingRepository implements MappingRepository
             return $this->afterFailedWrite($configuration, $mapping, $exception);
         }
 
+        try {
+            // 2xx でも body が JSON object でなければ object() は例外を投げる。
+            // 「更新されたかどうか不明」であって「更新されていない」ではない。
+            // complete() は必ず CompletionResult を返す契約 (AC-10) なので例外を
+            // 呼び出し元へ漏らさず、応答が不明瞭だった場合と同じ再取得経路へ流す。
+            // 例外を伝播させると後続 Mapping の同期ごと中断してしまう。
+            $payload = $response->object();
+        } catch (BacklogApiException $exception) {
+            return $this->verify(
+                $configuration,
+                $mapping,
+                CompletionFailureReason::WriteResultUnknown,
+                'PATCH 応答を解釈できず、再取得でも完了を確認できなかった: '.$this->client->redact($exception->getMessage()),
+            );
+        }
+
         // PATCH 応答が完了を示していればそれで確定。示していなければ再取得で確認する。
         // 応答だけを根拠に success と断定しない (docs/design.md §13.4)。
-        $updated = $this->mapper($configuration)->map($response->object());
+        $updated = $this->mapper($configuration)->map($payload);
 
-        if ($updated->isAccepted() && $updated->issue->done) {
+        // done だけでは足りない。GET と PATCH の間に remap された / API が別の課題を
+        // 返した場合、古い Achievement を完了扱いしてしまう。verify() と同じ
+        // identity チェックを通してから success を返す (AC-13, AC-15)。
+        if ($this->confirms($configuration, $mapping, $updated)) {
             return $this->succeed($mapping);
         }
 
@@ -277,16 +296,28 @@ final class BacklogMappingRepository implements MappingRepository
             return $this->fail($mapping, $reason, $detail.' / 再取得も失敗した: '.$this->client->redact($exception->getMessage()));
         }
 
-        if (
-            $current->isAccepted()
-            && $current->issue->done
-            && $current->issue->isSameIssue($mapping)
-            && $current->issue->matches($configuration->projectId, $mapping->worldKey, $mapping->achievementKey)
-        ) {
+        if ($this->confirms($configuration, $mapping, $current)) {
             return $this->succeed($mapping);
         }
 
         return $this->fail($mapping, $reason, $detail);
+    }
+
+    /**
+     * 観測した Issue が「対象 Mapping そのものが完了した」ことを示すか。
+     *
+     * PATCH 応答と再取得 (GET) の双方で同じ基準を使う。done だけを見ると、
+     * 別 Issue の応答や remap 後の課題で古い Achievement を完了扱いしてしまう。
+     */
+    private function confirms(
+        ProjectConfiguration $configuration,
+        MappingIssue $mapping,
+        MappingCandidate $observed,
+    ): bool {
+        return $observed->isAccepted()
+            && $observed->issue->done
+            && $observed->issue->isSameIssue($mapping)
+            && $observed->issue->matches($configuration->projectId, $mapping->worldKey, $mapping->achievementKey);
     }
 
     /**

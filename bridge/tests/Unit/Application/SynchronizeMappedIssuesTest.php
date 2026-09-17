@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Tests\Unit\Application;
 
 use App\Application\SynchronizeMappedIssues;
+use App\Domain\Mapping\CompletionFailureReason;
 use App\Domain\Mapping\CompletionStatus;
 use App\Domain\Registry\RegistryIndex;
 use App\Domain\Registry\RegistryIssue;
 use App\Domain\Snapshot\WorldKey;
 use App\Infrastructure\Backlog\Exceptions\BacklogTransportException;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\Unit\Infrastructure\Backlog\Mapping\FakeMappingBacklog;
@@ -172,6 +174,30 @@ final class SynchronizeMappedIssuesTest extends MappingTestCase
         $this->assertSame([], $this->backlog->patchedIssueKeys());
         $this->assertSame(0, $this->backlog->writeCount());
         $this->assertFalse($this->backlog->isDone($issueKey));
+    }
+
+    #[Test]
+    public function it_continues_with_the_remaining_mappings_when_a_patch_response_is_unreadable(): void
+    {
+        $unreadable = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
+        $succeeding = $this->backlog->addMappingIssue(self::WORLD_A, 'item:1326');
+
+        // 2xx だが body が JSON object ではない。解釈できないだけで「更新されて
+        // いない」とは限らないため、例外を外へ漏らさず結果型で返すこと。
+        $this->backlog->interceptNext('PATCH', '/api/v2/issues/'.$unreadable, static function (): mixed {
+            return Http::response([], 200);
+        });
+
+        $result = $this->synchronizer()->synchronize($this->world(), ['item:1326']);
+
+        // 後続 Mapping の処理が継続していること。
+        $this->assertSame([$succeeding], $result->completedIssueKeys());
+        $this->assertTrue($this->backlog->isDone($succeeding));
+
+        $this->assertTrue($result->hasFailures());
+        $this->assertSame($unreadable, $result->failures()[0]->issueKey);
+        $this->assertSame(CompletionFailureReason::WriteResultUnknown, $result->failures()[0]->reason);
+        $this->assertFalse($this->backlog->isDone($unreadable));
     }
 
     #[Test]
