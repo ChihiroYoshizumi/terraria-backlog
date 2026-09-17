@@ -14,6 +14,7 @@ use App\Domain\Registry\RegistryResult;
 use App\Domain\Registry\RegistrySubject;
 use App\Domain\Snapshot\WorldKey;
 use App\Infrastructure\Backlog\Exceptions\BacklogApiException;
+use App\Infrastructure\Backlog\Support\WriteFailureClassifier;
 use App\Infrastructure\Lock\CrossProcessLockFactory;
 use App\Infrastructure\Lock\LockUnavailableException;
 use InvalidArgumentException;
@@ -205,7 +206,7 @@ final class BacklogRegistryRepository implements RegistryRepository
         try {
             $response = $this->client->post('/api/v2/issues', $this->createPayload($configuration, $world, $achievement));
         } catch (BacklogApiException $exception) {
-            if ($this->isDefiniteWriteFailure($exception)) {
+            if (WriteFailureClassifier::isDefinite($exception)) {
                 // 4xx は Backlog が要求を拒否した = 作成されていないことが確定している。
                 // 再検索しても新しい事実は得られないため、そのまま failed とする。
                 return $this->writeFailed($world, $achievement, 'create', $exception);
@@ -264,7 +265,7 @@ final class BacklogRegistryRepository implements RegistryRepository
                     ['statusId' => $configuration->doneStatusId],
                 );
             } catch (BacklogApiException $exception) {
-                if ($this->isDefiniteWriteFailure($exception)) {
+                if (WriteFailureClassifier::isDefinite($exception)) {
                     // 4xx は更新が適用されていないことが確定している。再検索しない。
                     return $this->writeFailed($world, $achievement, 'update', $exception);
                 }
@@ -404,27 +405,6 @@ final class BacklogRegistryRepository implements RegistryRepository
         // 未完了で存在する = 作成までは通っていた。その状態から完了させる。
         // 再帰的な recovery は行わない (1 Snapshot での書き込み試行を有限にする)。
         return $this->completeAndVerify($configuration, $world, $achievement, $index, $existing, false);
-    }
-
-    /**
-     * 「書き込みが確定的に失敗した」と言い切れる例外か (docs/design.md §13.4)。
-     *
-     * §13.4 が「結果が不明」として次回検索での確認を求めるのは 5xx / Timeout
-     * (と、同じく再評価対象の 429) に限られる。これらは `isRetriable() === true`。
-     *
-     * 一方 4xx (`BacklogRequestException` / `BacklogAuthenticationException`) は
-     * Backlog が要求そのものを拒否しており、書き込みが起きていないことが確定する。
-     * 再検索しても結論は変わらないため `WriteFailed` として即 failed にする。
-     *
-     * HTTP status を持たない失敗 (transport 以外の想定外例外) や、2xx を受け取った
-     * 後の payload 解釈失敗 (`backlog.unexpected_payload`) は「書けたか不明」側。
-     * status の有無で区別し、不明側は保守的に再検索へ倒す。
-     */
-    private function isDefiniteWriteFailure(BacklogApiException $exception): bool
-    {
-        $status = $exception->status();
-
-        return ! $exception->isRetriable() && $status !== null && $status >= 400;
     }
 
     /**
