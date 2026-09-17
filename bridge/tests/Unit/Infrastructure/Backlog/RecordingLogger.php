@@ -30,9 +30,18 @@ final class RecordingLogger extends AbstractLogger
 
     /**
      * 出力された全内容を1つの文字列として返す。
+     *
+     * encode 失敗を握りつぶすと空文字列が返り、API Key 非漏洩の
+     * assertStringNotContainsString() が常に成功する偽陽性になる。
+     * JSON_THROW_ON_ERROR で必ず失敗を表面化させる。
+     *
+     * @throws \JsonException
      */
     public function dump(): string
     {
-        return (string) json_encode($this->records, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        return json_encode(
+            $this->records,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+        );
     }
 }
