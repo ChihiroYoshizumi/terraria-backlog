@@ -19,6 +19,13 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <!--
+            テスト専用のダミー APP_KEY。`.env` が無い環境 (clean clone / CI) でも
+            `composer test` / `./vendor/bin/phpunit` が通るようにするための固定値で、
+            平文は "TestingOnlyDoNotUseThisKey012345"。公開済みなので秘匿性は無く、
+            本番・ステージングでは絶対に使用しないこと (本番は .env の APP_KEY を使う)。
+        -->
+        <env name="APP_KEY" value="base64:VGVzdGluZ09ubHlEb05vdFVzZVRoaXNLZXkwMTIzNDU="/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
