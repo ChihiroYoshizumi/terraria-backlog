@@ -320,6 +320,61 @@ Mono による Smoke Test（Terraria クライアント不要の範囲）も実�
 - [ ] AC-18: Bridge 停止中もゲーム進行がブロックされない
 - [ ] AC-08: Adapter 停止中の撃破が再起動後の `startup` Snapshot の `flags` に反映される
 
+### 既知欠陥の修正（PR #20 Copilot レビュー指摘 / 2026-09-17）
+
+main に入っていた Adapter の既知欠陥5件を `fix/adapter-response-validation` で修正した。
+いずれも「修正前のコードでは失敗する」回帰テストを追加し、修正を一時的に戻して
+実際に落ちることを確認してから戻している。
+
+| # | 箇所 | 修正内容 | 回帰テスト |
+| --- | --- | --- | --- |
+| 1 | `Transport/AdapterNotification.cs` | response の `requestId` / `worldKey` を contract どおり必須にし、`SnapshotResponse.Matches()` で **送信した envelope と照合**してから通知を dispatch する。不一致・欠落は通知を捨てて診断ログに残す | `ResponseForAnotherRequestIdIsNotDispatched` / `ResponseForAnotherWorldKeyIsNotDispatched` / `ResponseWithoutTheRequiredIdentityIsNotDispatched` / `MatchingResponseIsDispatchedRegardlessOfRequestIdCasing` |
+| 2 | `Transport/SnapshotSender.cs` | 2xx でも response JSON が壊れている / 欠けている経路を recovery failure として扱い、復旧待ちフラグを立てる（AC-09 の「復旧後の server 向け通知」が落ちないように） | `UnreadableSuccessResponseAlsoSetsTheRecoveryPendingFlag` / `MismatchedResponseAlsoSetsTheRecoveryPendingFlag` |
+| 3 | `Transport/SnapshotSender.cs` | 復旧待ちフラグを bool から**失敗の世代番号**に変え、解除を「その通知を確立した要求の世代」に紐付けた。通知を enqueue した後に別要求が失敗していれば解除しない | `RecoveryFlagStaysSetWhenANewerRequestFailsBeforeTheNoticeIsDisplayed` / `DispatchWithoutAServerNotificationDoesNotClearTheRecoveryFlag` |
+| 4 | `Transport/ResponseBodyReader.cs`（新規） / `Transport/HttpSnapshotTransport.TShock.cs` | 応答 body を上限付きで読む。既定 1 MiB（`ResponseBodyReader.DefaultMaxResponseBytes`、コンストラクタで上書き可）。超過は読み切らず transport failure にする | `ResponseBodyReaderTests`（7件。特に `ABodyOverTheLimitIsATransportFailure` / `AnOversizedBodyIsNotReadToTheEnd`） |
+| 5 | `Runtime/RollbackScope.cs`（新規） / `TerrariaBacklogPlugin.cs` | 初期化の各段階で undo を積み、失敗時に逆順で全登録をロールバックする。`Teardown` も同じ scope を使い、`_enabled` で Game hook の解除を飛ばさないようにした | `RollbackScopeTests`（5件） / `TerrariaBacklogPluginTests.HoldsARollbackScopeSoFailedInitializationIsUndone` |
+
+修正は**テスト可能な層**（`Transport/` / `Runtime/` の純ロジック）に寄せた。
+`HttpSnapshotTransport.TShock.cs` と `TerrariaBacklogPlugin.cs` は net45 / 実 TShock でしか
+ロードできないため、前者は body 読み取りを `ResponseBodyReader` へ、後者は巻き戻し手順を
+`RollbackScope` へ切り出し、薄層側には委譲だけを残している。
+
+#### 検証結果（再実行）
+
+| コマンド | 結果 |
+| --- | --- |
+| `./scripts/setup-tshock.sh` | OK（TShock 4.3.13 を `.tshock-server/` へ展開） |
+| `dotnet build adapter/TerrariaBacklog.Adapter.csproj` | OK（0 warning / 0 error） |
+| `dotnet test adapter/Tests/TerrariaBacklog.Adapter.Tests.csproj` | OK（142 passed / 0 failed。121 → 142、+21件） |
+| `./scripts/deploy-adapter.sh` | OK（`ServerPlugins/TerrariaBacklog.Adapter.dll`） |
+| `cd contracts && npm install && npm run validate` | OK（5 checks すべて OK。契約ファイルは未変更） |
+
+#### Mono Smoke Test（実 HTTP 経路 / Terraria クライアント不要）
+
+`mono TerrariaServer.exe -forceupdate` で TShock 4.3.13 に deploy 済み Adapter をロードし、
+`127.0.0.1:8080` に「応答を細工する Bridge スタブ」を立てて修正 #1 / #4 の実経路を確認した。
+unit test では触れない `HttpSnapshotTransport.TShock.cs` の HTTP 経路がここで通る。
+
+| スタブの応答 | server console の結果 |
+| --- | --- |
+| 送信された `requestId` / `worldKey` をそのまま返す | `[Backlog] stub notification #1` が console に表示される（照合が通る） |
+| `requestId` を別の UUID にして返す | `bridge response does not match the in-flight request (expected requestId=28cf2139-… , got requestId=00000000-…); the notifications are dropped.` — **通知は表示されない** |
+| 2 MiB の body を返す | `snapshot request did not complete (reason=periodic): bridge response exceeded the 1048576 byte limit; it was not read.` — スタブ側は送信途中で `BrokenPipeError` になり、**読み切っていない**ことが裏取れた |
+
+いずれの失敗でもサーバーは停止せず、ログだけが残ることも併せて確認した。
+
+
+#### この修正で確認できないこと
+
+- 修正 #5（初期化を実際に途中で失敗させたときの巻き戻し）は `TerrariaBacklogPlugin.Initialize()` が
+  net45 / 実 TShock でしか動かないため実機では試していない。自動テストの対象は切り出した
+  `RollbackScope` の挙動と、plugin が実際に `RollbackScope` を持つことのメタデータ検証まで。
+- 修正 #1 の照合そのものは上記 Smoke Test で確認したが、`audience=players` の通知が
+  「指定プレイヤーにだけ表示される」ことの確認には Terraria クライアントが要る。
+  実文言での結合確認は Bridge が通知を返すようになる Task 07 実装後になる
+  （現在 Bridge は常に `notifications: []`）。
+
+
 ### 未対応事項
 
 - 通知表示と AC-09 の実機確認は Task 07 実装後に行う（現在 Bridge は常に `notifications: []` を返すため原理的に確認できない）。

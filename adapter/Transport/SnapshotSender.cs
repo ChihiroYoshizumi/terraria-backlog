@@ -27,6 +27,9 @@ namespace TerrariaBacklog.Adapter.Transport
     {
         private const int MaxQueuedNotifications = 256;
 
+        /// <summary>まだ1件も通知を取り出していないことを表す世代値。</summary>
+        private const long NoGeneration = -1L;
+
         private readonly AdapterSettings _settings;
         private readonly RuntimeVersions _runtime;
         private readonly ISnapshotTransport _transport;
@@ -34,12 +37,27 @@ namespace TerrariaBacklog.Adapter.Transport
         private readonly Func<Guid> _requestIdFactory;
 
         private readonly SnapshotDispatchQueue _queue = new SnapshotDispatchQueue();
-        private readonly Queue<AdapterNotification> _notifications = new Queue<AdapterNotification>();
+        private readonly Queue<QueuedNotification> _notifications = new Queue<QueuedNotification>();
         private readonly object _notificationGate = new object();
         private readonly ManualResetEvent _workAvailable = new ManualResetEvent(false);
 
         private int _sending;
-        private int _recoveryPending;
+
+        /// <summary>
+        /// 失敗の世代。失敗のたびに増える。<see cref="_clearedGeneration"/> と一致していれば
+        /// 復旧待ちは無い。フラグを「立てた要求」と「解除する通知」を紐付けるために
+        /// bool ではなく世代番号で持つ (docs/design.md §15.2)。
+        /// </summary>
+        private long _failureGeneration;
+
+        private long _clearedGeneration;
+
+        /// <summary>
+        /// 直近の drain で取り出した通知に刻まれていた世代の最小値。
+        /// <see cref="NoGeneration"/> なら取り出していない。
+        /// </summary>
+        private long _dispatchGeneration = NoGeneration;
+
         private volatile bool _stopping;
         private Thread _worker;
 
@@ -87,7 +105,7 @@ namespace TerrariaBacklog.Adapter.Transport
         /// </summary>
         public bool RecoveryPending
         {
-            get { return Interlocked.CompareExchange(ref _recoveryPending, 0, 0) != 0; }
+            get { return Interlocked.Read(ref _failureGeneration) != Interlocked.Read(ref _clearedGeneration); }
         }
 
         public int PendingCount
@@ -202,7 +220,31 @@ namespace TerrariaBacklog.Adapter.Transport
             if (!SnapshotResponseReader.TryRead(result.Body, out response, out error))
             {
                 // 成功応答だが読めない。Adapter が成功 ACK を捏造しない。
+                // この要求の結果は不明なので復旧待ちとして扱い、次の periodic / manual に
+                // recoveryPending を載せる (docs/design.md §15.2 / AC-09)。
                 _log.Error("bridge response could not be read: " + error);
+                MarkRecoveryPending();
+
+                return;
+            }
+
+            var expectedRequestId = envelope.RequestId.ToString("D");
+
+            if (!response.Matches(expectedRequestId, envelope.WorldKey))
+            {
+                // 送信した envelope に対応しない応答。古い応答や別 world の応答を
+                // そのまま表示すると、別要求の通知を誤った Player へ出しかねない。
+                // requestId / worldKey は診断に残すが、通知は捨てる。
+                _log.Error(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "bridge response does not match the in-flight request "
+                    + "(expected requestId={0} worldKey={1}, got requestId={2} worldKey={3}); "
+                    + "the notifications are dropped.",
+                    expectedRequestId,
+                    envelope.WorldKey,
+                    response.RequestId,
+                    response.WorldKey));
+                MarkRecoveryPending();
 
                 return;
             }
@@ -217,6 +259,10 @@ namespace TerrariaBacklog.Adapter.Transport
                 return;
             }
 
+            // single-flight なので、ここで読む世代はこの応答を受け取った時点の世代である。
+            // 後続の失敗で世代が進めば、この通知では復旧待ちを解除しない。
+            var generation = Interlocked.Read(ref _failureGeneration);
+
             lock (_notificationGate)
             {
                 for (var i = 0; i < notifications.Count; i++)
@@ -227,7 +273,7 @@ namespace TerrariaBacklog.Adapter.Transport
                         _notifications.Dequeue();
                     }
 
-                    _notifications.Enqueue(notifications[i]);
+                    _notifications.Enqueue(new QueuedNotification(notifications[i], generation));
                 }
             }
         }
@@ -247,7 +293,15 @@ namespace TerrariaBacklog.Adapter.Transport
                     return false;
                 }
 
-                notification = _notifications.Dequeue();
+                var queued = _notifications.Dequeue();
+                notification = queued.Notification;
+
+                // 同じ drain で複数世代の通知が混ざった場合は、古い方に合わせて
+                // 解除判定する（新しい失敗を隠さない側に倒す）。
+                if (_dispatchGeneration == NoGeneration || queued.Generation < _dispatchGeneration)
+                {
+                    _dispatchGeneration = queued.Generation;
+                }
 
                 return true;
             }
@@ -256,15 +310,69 @@ namespace TerrariaBacklog.Adapter.Transport
         /// <summary>
         /// docs/design.md §15.2: 復旧完了通知を console へ表示したらフラグを解除する。
         /// 未達・部分失敗（= server 向け通知が返らない）では解除しない。
+        ///
+        /// 解除は「その通知を確立した要求の世代」に紐付ける。通知を enqueue した後に
+        /// 別の要求が失敗していた場合は世代が進んでいるので解除せず、
+        /// 新しい失敗を古い通知の表示で隠さない。
+        /// </summary>
+        /// <param name="displayedServerNotification">
+        /// <c>audience=server</c> の通知を1件以上 console へ表示したか。
+        /// </param>
+        public void OnNotificationsDispatched(bool displayedServerNotification)
+        {
+            long dispatched;
+
+            lock (_notificationGate)
+            {
+                dispatched = _dispatchGeneration;
+                _dispatchGeneration = NoGeneration;
+            }
+
+            if (!displayedServerNotification || dispatched == NoGeneration)
+            {
+                return;
+            }
+
+            var current = Interlocked.Read(ref _failureGeneration);
+
+            if (dispatched != current)
+            {
+                // 通知が積まれた後にも失敗している。復旧は完了していない。
+                _log.Warn("a newer snapshot failed after the recovery notification was queued; "
+                    + "the recovery flag stays set.");
+
+                return;
+            }
+
+            Interlocked.Exchange(ref _clearedGeneration, current);
+        }
+
+        /// <summary>
+        /// <see cref="OnNotificationsDispatched(bool)"/> の
+        /// 「server 向け通知を表示した」ケース。
         /// </summary>
         public void OnRecoveryNotificationDisplayed()
         {
-            Interlocked.Exchange(ref _recoveryPending, 0);
+            OnNotificationsDispatched(true);
         }
 
         private void MarkRecoveryPending()
         {
-            Interlocked.Exchange(ref _recoveryPending, 1);
+            Interlocked.Increment(ref _failureGeneration);
+        }
+
+        /// <summary>表示待ち通知と、それを確立した要求の世代。</summary>
+        private struct QueuedNotification
+        {
+            public QueuedNotification(AdapterNotification notification, long generation)
+            {
+                Notification = notification;
+                Generation = generation;
+            }
+
+            public readonly AdapterNotification Notification;
+
+            public readonly long Generation;
         }
 
         // ------------------------------------------------------------------

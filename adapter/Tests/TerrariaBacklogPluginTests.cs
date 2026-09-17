@@ -120,6 +120,21 @@ public class TerrariaBacklogPluginTests : IClassFixture<AdapterMetadataFixture>
     }
 
     [Fact]
+    public void HoldsARollbackScopeSoFailedInitializationIsUndone()
+    {
+        // hook 登録の後で初期化が失敗した場合、部分的に登録された callback を残さない。
+        // 巻き戻し手順そのものは RollbackScopeTests が検証する。ここでは
+        // plugin entrypoint が実際にその仕組みを持っていることをメタデータで固定する
+        // （TerrariaBacklogPlugin は net45 / 実 TShock でしかロードできないため）。
+        var field = PluginType
+            .GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .SingleOrDefault(f => f.FieldType.Name == "RollbackScope");
+
+        Assert.NotNull(field);
+        Assert.True(field!.IsInitOnly, "The rollback scope must not be reassigned after construction.");
+    }
+
+    [Fact]
     public void DoesNotExposeAchievementOrBacklogConcepts()
     {
         // docs/design.md §3.1: Adapter は Achievement Key / Backlog Issue Key /
