@@ -349,14 +349,30 @@ main に入っていた Adapter の既知欠陥5件を `fix/adapter-response-val
 | `./scripts/deploy-adapter.sh` | OK（`ServerPlugins/TerrariaBacklog.Adapter.dll`） |
 | `cd contracts && npm install && npm run validate` | OK（5 checks すべて OK。契約ファイルは未変更） |
 
+#### Mono Smoke Test（実 HTTP 経路 / Terraria クライアント不要）
+
+`mono TerrariaServer.exe -forceupdate` で TShock 4.3.13 に deploy 済み Adapter をロードし、
+`127.0.0.1:8080` に「応答を細工する Bridge スタブ」を立てて修正 #1 / #4 の実経路を確認した。
+unit test では触れない `HttpSnapshotTransport.TShock.cs` の HTTP 経路がここで通る。
+
+| スタブの応答 | server console の結果 |
+| --- | --- |
+| 送信された `requestId` / `worldKey` をそのまま返す | `[Backlog] stub notification #1` が console に表示される（照合が通る） |
+| `requestId` を別の UUID にして返す | `bridge response does not match the in-flight request (expected requestId=28cf2139-… , got requestId=00000000-…); the notifications are dropped.` — **通知は表示されない** |
+| 2 MiB の body を返す | `snapshot request did not complete (reason=periodic): bridge response exceeded the 1048576 byte limit; it was not read.` — スタブ側は送信途中で `BrokenPipeError` になり、**読み切っていない**ことが裏取れた |
+
+いずれの失敗でもサーバーは停止せず、ログだけが残ることも併せて確認した。
+
+
 #### この修正で確認できないこと
 
-- `HttpSnapshotTransport` 自体（応答サイズ上限の実 HTTP 経路）と `TerrariaBacklogPlugin.Initialize()` の
-  実際の巻き戻しは net45 / 実 TShock でしか動かないため、unit test では切り出した
-  `ResponseBodyReader` / `RollbackScope` と、plugin が実際に `RollbackScope` を持つことの
-  メタデータ検証までに留まる。
-- 修正 #1 の「別リクエストの通知が誤ったプレイヤーへ出ない」ことの実機確認は、
-  Bridge が通知を返すようになる Task 07 実装後でなければ行えない（現在は常に `notifications: []`）。
+- 修正 #5（初期化を実際に途中で失敗させたときの巻き戻し）は `TerrariaBacklogPlugin.Initialize()` が
+  net45 / 実 TShock でしか動かないため実機では試していない。自動テストの対象は切り出した
+  `RollbackScope` の挙動と、plugin が実際に `RollbackScope` を持つことのメタデータ検証まで。
+- 修正 #1 の照合そのものは上記 Smoke Test で確認したが、`audience=players` の通知が
+  「指定プレイヤーにだけ表示される」ことの確認には Terraria クライアントが要る。
+  実文言での結合確認は Bridge が通知を返すようになる Task 07 実装後になる
+  （現在 Bridge は常に `notifications: []`）。
 
 
 ### 未対応事項
