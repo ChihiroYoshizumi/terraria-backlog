@@ -35,6 +35,21 @@ final class WorldFlagEvaluatorTest extends TestCase
         ];
     }
 
+    /**
+     * `supportedFlagTable()` の flag 名だけを渡す provider。
+     * 対応表を正本に保ったまま、引数1つのテストへ渡すために派生させる
+     * （provider が余分な引数を渡すと PHPUnit warning になり exit code が 1 になる）。
+     *
+     * @return list<array{0: string}>
+     */
+    public static function supportedFlagNames(): array
+    {
+        return array_map(
+            static fn (array $row): array => [$row[0]],
+            self::supportedFlagTable(),
+        );
+    }
+
     #[DataProvider('supportedFlagTable')]
     public function test_each_supported_flag_maps_to_its_achievement_key(string $flag, string $expectedKey): void
     {
@@ -59,7 +74,7 @@ final class WorldFlagEvaluatorTest extends TestCase
         $this->assertSame($expected, array_unique($expected));
     }
 
-    #[DataProvider('supportedFlagTable')]
+    #[DataProvider('supportedFlagNames')]
     public function test_false_flag_yields_no_achievement(string $flag): void
     {
         $this->assertSame([], (new WorldFlagEvaluator)->evaluate([$flag => false]));
