@@ -266,6 +266,21 @@ final class BacklogClientTest extends TestCase
     }
 
     #[Test]
+    public function it_rejects_an_empty_array_payload_for_object_endpoints(): void
+    {
+        // object を返すはずの endpoint が [] (= JSON の [] / {}) を返した場合、
+        // 後続の $json['id'] 等が未定義になる。成功扱いせず fail closed とする
+        // (docs/design.md §13.4)。
+        Http::fake([self::BASE_URL.'/*' => Http::response([], 200)]);
+
+        $response = $this->client()->get('/api/v2/projects/TRAINING_YOSHIZUMI');
+
+        $this->expectException(BacklogApiException::class);
+
+        $response->object();
+    }
+
+    #[Test]
     public function it_builds_backlog_style_array_query_parameters(): void
     {
         $query = BacklogClient::buildQueryString([
