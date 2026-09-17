@@ -205,11 +205,27 @@ final class BacklogRegistryRepository implements RegistryRepository
         try {
             $response = $this->client->post('/api/v2/issues', $this->createPayload($configuration, $world, $achievement));
         } catch (BacklogApiException $exception) {
-            // timeout 等で作成有無が不明。即座に作り直さず再検索する。
+            if ($this->isDefiniteWriteFailure($exception)) {
+                // 4xx は Backlog が要求を拒否した = 作成されていないことが確定している。
+                // 再検索しても新しい事実は得られないため、そのまま failed とする。
+                return $this->writeFailed($world, $achievement, 'create', $exception);
+            }
+
+            // 5xx / timeout / 429 等で作成有無が不明。即座に作り直さず再検索する。
             return $this->recoverFromUnknownWrite($configuration, $world, $achievement, $index, 'create', $exception);
         }
 
-        $created = $this->mapper($configuration)->map($response->object());
+        try {
+            // 201 でも body が JSON object でなければ object() は例外を投げる。
+            // 「作成されたかどうか不明」であって「作成されていない」ではないため、
+            // 例外を呼び出し元へ漏らさず (ensureRegistered は必ず RegistryResult を
+            // 返す契約) 再検索で確認する。
+            $payload = $response->object();
+        } catch (BacklogApiException $exception) {
+            return $this->recoverFromUnknownWrite($configuration, $world, $achievement, $index, 'create', $exception);
+        }
+
+        $created = $this->mapper($configuration)->map($payload);
 
         if ($created === null || ! $created->matches($configuration->projectId, $world->value, $achievement->keyString())) {
             // 201 は返ったが期待した Registry ではない。応答だけで成功と断定せず再検索する。
@@ -248,6 +264,11 @@ final class BacklogRegistryRepository implements RegistryRepository
                     ['statusId' => $configuration->doneStatusId],
                 );
             } catch (BacklogApiException $exception) {
+                if ($this->isDefiniteWriteFailure($exception)) {
+                    // 4xx は更新が適用されていないことが確定している。再検索しない。
+                    return $this->writeFailed($world, $achievement, 'update', $exception);
+                }
+
                 if ($allowRecovery) {
                     return $this->recoverFromUnknownWrite($configuration, $world, $achievement, $index, 'update', $exception);
                 }
@@ -383,6 +404,61 @@ final class BacklogRegistryRepository implements RegistryRepository
         // 未完了で存在する = 作成までは通っていた。その状態から完了させる。
         // 再帰的な recovery は行わない (1 Snapshot での書き込み試行を有限にする)。
         return $this->completeAndVerify($configuration, $world, $achievement, $index, $existing, false);
+    }
+
+    /**
+     * 「書き込みが確定的に失敗した」と言い切れる例外か (docs/design.md §13.4)。
+     *
+     * §13.4 が「結果が不明」として次回検索での確認を求めるのは 5xx / Timeout
+     * (と、同じく再評価対象の 429) に限られる。これらは `isRetriable() === true`。
+     *
+     * 一方 4xx (`BacklogRequestException` / `BacklogAuthenticationException`) は
+     * Backlog が要求そのものを拒否しており、書き込みが起きていないことが確定する。
+     * 再検索しても結論は変わらないため `WriteFailed` として即 failed にする。
+     *
+     * HTTP status を持たない失敗 (transport 以外の想定外例外) や、2xx を受け取った
+     * 後の payload 解釈失敗 (`backlog.unexpected_payload`) は「書けたか不明」側。
+     * status の有無で区別し、不明側は保守的に再検索へ倒す。
+     */
+    private function isDefiniteWriteFailure(BacklogApiException $exception): bool
+    {
+        $status = $exception->status();
+
+        return ! $exception->isRetriable() && $status !== null && $status >= 400;
+    }
+
+    /**
+     * create / update が確定的に失敗した場合 (docs/design.md §17 の診断ログ)。
+     *
+     * 再検索は行わない。書き込みが起きていないことは確定しており、限定再検索は
+     * Backlog への無駄な負荷にしかならないため。
+     */
+    private function writeFailed(
+        WorldKey $world,
+        Achievement $achievement,
+        string $operation,
+        BacklogApiException $cause,
+    ): RegistryResult {
+        $this->logger->warning('registry.write_failed', [
+            'operation' => 'registry.'.$operation,
+            'worldKey' => $world->value,
+            'achievementKey' => $achievement->keyString(),
+            'error_type' => $cause->errorType(),
+            'http_status' => $cause->status(),
+            'detail' => $this->client->redact($cause->getMessage()),
+        ]);
+
+        return $this->failed(
+            $world,
+            $achievement,
+            RegistryFailureReason::WriteFailed,
+            sprintf(
+                '%s が Backlog に拒否された (HTTP %s)。書き込みは行われていない: %s',
+                $operation,
+                $cause->status() ?? 'unknown',
+                $this->client->redact($cause->getMessage()),
+            ),
+        );
     }
 
     /**

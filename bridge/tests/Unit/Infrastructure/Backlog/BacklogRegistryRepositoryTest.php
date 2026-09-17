@@ -405,6 +405,143 @@ final class BacklogRegistryRepositoryTest extends TestCase
         $this->assertFalse($result->isPersisted());
     }
 
+    // ------------------------------------------------------------- 5.5
+    // 「確定的失敗 (4xx)」と「結果が不明 (5xx / timeout / 壊れた応答)」の区別。
+    // docs/design.md §13.4 が再検索を求めるのは後者だけ。
+
+    #[Test]
+    public function it_does_not_research_when_the_create_is_rejected_with_an_authentication_error(): void
+    {
+        $repository = $this->repository();
+        $index = $repository->loadIndex($this->world());
+
+        // 401 = Backlog が要求を拒否した。作成されていないことが確定している。
+        $this->backlog->interceptNext('POST', '/api/v2/issues', fn (): PromiseInterface => Http::response(
+            ['errors' => [['message' => 'Authentication failure']]],
+            401,
+        ));
+
+        $result = $repository->ensureRegistered($this->world(), $this->achievement(), $index);
+
+        $this->assertSame(RegistryStatus::Failed, $result->status);
+        $this->assertFalse($result->isPersisted());
+        $this->assertSame(RegistryFailureReason::WriteFailed, $result->reason);
+
+        // 確定的失敗なので限定再検索を行わない。
+        $this->assertSame(1, $this->backlog->countRequests('POST', '/api/v2/issues'));
+        $this->assertSame([], $this->listRequestsAfterLast('POST', '/api/v2/issues'));
+        $this->assertContains('registry.write_failed', $this->loggedMessages());
+    }
+
+    #[Test]
+    public function it_does_not_research_when_the_create_is_rejected_with_a_not_found_error(): void
+    {
+        $repository = $this->repository();
+        $index = $repository->loadIndex($this->world());
+
+        $this->backlog->interceptNext('POST', '/api/v2/issues', fn (): PromiseInterface => Http::response(
+            ['errors' => [['message' => 'No such project']]],
+            404,
+        ));
+
+        $result = $repository->ensureRegistered($this->world(), $this->achievement(), $index);
+
+        $this->assertSame(RegistryStatus::Failed, $result->status);
+        $this->assertSame(RegistryFailureReason::WriteFailed, $result->reason);
+        $this->assertSame([], $this->listRequestsAfterLast('POST', '/api/v2/issues'));
+    }
+
+    #[Test]
+    public function it_does_not_research_when_the_update_is_rejected_with_a_client_error(): void
+    {
+        $this->backlog->addRegistry(self::WORLD_A, 'item:1326', done: false);
+
+        $repository = $this->repository();
+        $index = $repository->loadIndex($this->world());
+
+        // 404 = 更新が適用されていないことが確定している。
+        $this->backlog->interceptNext('PATCH', '/api/v2/issues/', fn (): PromiseInterface => Http::response(
+            ['errors' => [['message' => 'No such issue']]],
+            404,
+        ));
+
+        $result = $repository->ensureRegistered($this->world(), $this->achievement(), $index);
+
+        $this->assertSame(RegistryStatus::Failed, $result->status);
+        $this->assertFalse($result->isPersisted());
+        $this->assertSame(RegistryFailureReason::WriteFailed, $result->reason);
+
+        // 再検索も再作成もしない。
+        $this->assertSame([], $this->listRequestsAfterLast('PATCH', '/api/v2/issues/'));
+        $this->assertSame(0, $this->backlog->countRequests('POST', '/api/v2/issues'));
+        $this->assertSame(1, $this->backlog->countRequests('PATCH', '/api/v2/issues/'));
+    }
+
+    #[Test]
+    public function it_researches_when_the_create_fails_with_a_server_error(): void
+    {
+        $repository = $this->repository();
+        $index = $repository->loadIndex($this->world());
+
+        // 5xx は「作成されたかどうか不明」。Backlog 側には作成が残っている。
+        $this->backlog->interceptNext('POST', '/api/v2/issues', function (FakeBacklog $backlog): PromiseInterface {
+            $backlog->addRegistry(self::WORLD_A, 'item:1326', done: false);
+
+            return Http::response(['errors' => [['message' => 'Internal Server Error']]], 500);
+        });
+
+        $result = $repository->ensureRegistered($this->world(), $this->achievement(), $index);
+
+        // 再検索で作成済みを見つけ、そこから完了させる。再作成はしない。
+        $this->assertSame(RegistryStatus::Registered, $result->status);
+        $this->assertSame(1, $this->backlog->countRequests('POST', '/api/v2/issues'));
+
+        $researches = $this->listRequestsAfterLast('POST', '/api/v2/issues');
+        $this->assertNotSame([], $researches, 'create の 5xx 後に再検索が行われていない。');
+        $this->assertSame('item:1326', $researches[0]['query']['customField_'.self::ACHIEVEMENT_KEY_FIELD_ID] ?? null);
+    }
+
+    #[Test]
+    public function it_returns_a_result_instead_of_throwing_when_the_create_response_body_is_not_an_object(): void
+    {
+        $repository = $this->repository();
+        $index = $repository->loadIndex($this->world());
+
+        // 201 だが body が JSON object ではない。作成有無は不明。
+        $this->backlog->interceptNext('POST', '/api/v2/issues', fn (): PromiseInterface => Http::response([], 201));
+
+        $result = $repository->ensureRegistered($this->world(), $this->achievement(), $index);
+
+        // 例外が ensureRegistered の外へ漏れず、必ず RegistryResult が返る。
+        $this->assertSame(RegistryStatus::Failed, $result->status);
+        $this->assertFalse($result->isPersisted());
+        $this->assertSame(RegistryFailureReason::WriteResultUnknown, $result->reason);
+
+        // 「不明」なので再検索は行う。再作成はしない。
+        $this->assertSame(1, $this->backlog->countRequests('POST', '/api/v2/issues'));
+        $this->assertNotSame([], $this->listRequestsAfterLast('POST', '/api/v2/issues'));
+    }
+
+    #[Test]
+    public function it_recovers_from_a_broken_create_response_body_when_the_issue_was_actually_created(): void
+    {
+        $repository = $this->repository();
+        $index = $repository->loadIndex($this->world());
+
+        // 作成は成功しているが、応答 body が壊れている (object ではなく配列)。
+        $this->backlog->interceptNext('POST', '/api/v2/issues', function (FakeBacklog $backlog): PromiseInterface {
+            $backlog->addRegistry(self::WORLD_A, 'item:1326', done: false);
+
+            return Http::response([['unexpected' => 'payload']], 201);
+        });
+
+        $result = $repository->ensureRegistered($this->world(), $this->achievement(), $index);
+
+        $this->assertSame(RegistryStatus::Registered, $result->status);
+        $this->assertTrue($result->isPersisted());
+        $this->assertSame(1, $this->backlog->countRequests('POST', '/api/v2/issues'));
+    }
+
     // ---------------------------------------------------------------- 6
 
     #[Test]
@@ -668,6 +805,19 @@ final class BacklogRegistryRepositoryTest extends TestCase
         $this->assertSame(RegistryStatus::Failed, $result->status);
         $this->assertStringNotContainsString(self::API_KEY, $this->logger->dump());
         $this->assertStringNotContainsString(self::API_KEY, (string) $result->detail);
+    }
+
+    /**
+     * 出力された構造化ログの message 一覧。
+     *
+     * @return list<string>
+     */
+    private function loggedMessages(): array
+    {
+        return array_map(
+            static fn (array $record): string => $record['message'],
+            $this->logger->records,
+        );
     }
 
     /**
