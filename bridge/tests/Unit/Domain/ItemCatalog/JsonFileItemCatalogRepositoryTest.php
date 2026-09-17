@@ -134,6 +134,57 @@ final class JsonFileItemCatalogRepositoryTest extends TestCase
     }
 
     /**
+     * 空の catalog は「全 Item が catalog に無い = 全 skip」を正常系にしてしまうため、
+     * catalog そのものが壊れているとみなす (fail closed)。
+     *
+     * @return list<array{0: string}>
+     */
+    public static function emptyOrNonListItems(): array
+    {
+        return [
+            'empty list' => ['{"terrariaVersion":"1.3.0.8","items":[]}'],
+            'empty object' => ['{"terrariaVersion":"1.3.0.8","items":{}}'],
+            'keyed map' => ['{"terrariaVersion":"1.3.0.8","items":{"2":{"id":2,"name":"Dirt Block","maxStack":999}}}'],
+        ];
+    }
+
+    #[DataProvider('emptyOrNonListItems')]
+    public function test_catalog_without_a_non_empty_item_list_fails_closed(string $contents): void
+    {
+        $this->writeCatalog('1.3.0.8', $contents);
+
+        $this->expectException(ItemCatalogUnavailable::class);
+
+        (new JsonFileItemCatalogRepository($this->tempDir))->forVersion('1.3.0.8');
+    }
+
+    /**
+     * AchievementKey::item() は正の Item ID を前提にしているため、
+     * 0 / 負値は catalog ロード時点で止める (Snapshot 処理中に漏らさない)。
+     *
+     * @return list<array{0: string}>
+     */
+    public static function nonPositiveItemIds(): array
+    {
+        return [
+            'zero' => ['{"terrariaVersion":"1.3.0.8","items":[{"id":0,"name":"None","maxStack":1}]}'],
+            'negative' => ['{"terrariaVersion":"1.3.0.8","items":[{"id":-1,"name":"Legacy Alias","maxStack":1}]}'],
+            'negative among valid' => ['{"terrariaVersion":"1.3.0.8","items":[{"id":2,"name":"Dirt Block","maxStack":999},{"id":-48,"name":"Legacy Alias","maxStack":1}]}'],
+        ];
+    }
+
+    #[DataProvider('nonPositiveItemIds')]
+    public function test_non_positive_item_id_fails_closed(string $contents): void
+    {
+        $this->writeCatalog('1.3.0.8', $contents);
+
+        $this->expectException(ItemCatalogUnavailable::class);
+        $this->expectExceptionMessageMatches('/\.id must be an integer >= 1/');
+
+        (new JsonFileItemCatalogRepository($this->tempDir))->forVersion('1.3.0.8');
+    }
+
+    /**
      * @return list<array{0: string}>
      */
     public static function unsafeVersionStrings(): array

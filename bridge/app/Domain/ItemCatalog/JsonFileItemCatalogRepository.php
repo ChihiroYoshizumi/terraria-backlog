@@ -68,8 +68,8 @@ final class JsonFileItemCatalogRepository implements ItemCatalogRepository
         }
 
         $rawItems = $decoded['items'] ?? null;
-        if (! is_array($rawItems)) {
-            throw ItemCatalogUnavailable::unreadable($terrariaVersion, $path, 'missing "items" array');
+        if (! is_array($rawItems) || ! array_is_list($rawItems) || $rawItems === []) {
+            throw ItemCatalogUnavailable::unreadable($terrariaVersion, $path, '"items" must be a non-empty JSON array');
         }
 
         $entries = [];
@@ -97,8 +97,8 @@ final class JsonFileItemCatalogRepository implements ItemCatalogRepository
         $name = $rawItem['name'] ?? null;
         $maxStack = $rawItem['maxStack'] ?? null;
 
-        if (! is_int($id)) {
-            throw ItemCatalogUnavailable::unreadable($version, $path, $at.'.id must be an integer');
+        if (! is_int($id) || $id < 1) {
+            throw ItemCatalogUnavailable::unreadable($version, $path, $at.'.id must be an integer >= 1');
         }
 
         if (! is_string($name) || $name === '') {
