@@ -102,8 +102,10 @@ mono TerrariaServer.exe -world worlds/dev.wld -autocreate 2
 
 `-autocreate <size>` を指定すると `worlds/dev.wld` が存在しない場合に自動生成される。
 `<size>` は**ワールドサイズ**で `1`=Small / `2`=Medium / `3`=Large（難易度ではない）。
-難易度は `-difficulty <0|1>`（`0`=Normal, `1`=Expert）で指定する。Terraria 1.3.0.8 に
-Master mode は存在しない。既存 World を使う場合は `-world <path>` のみでよい。
+難易度に対応する CLI 引数は TShock 4.3.13 の `TerrariaServer.exe` に存在しない
+（未知の `-` 引数はエラーにならず黙って無視される）。難易度を変える場合は
+`-config <path>` で読み込む設定ファイルの `difficulty=0`（Normal）/ `difficulty=1`（Expert）を使う。
+Terraria 1.3.0.8 に Master mode は存在しない。既存 World を使う場合は `-world <path>` のみでよい。
 必要に応じて `-port <port>` でポートを指定できる（既定 7777）。
 
 ### Mono のインストール

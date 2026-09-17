@@ -55,7 +55,7 @@ CACHE_STORE=array
 | --- | --- |
 | 言語 | C# |
 | Runtime | 採用 TShock が要求する .NET Runtime（§2.3: .NET Framework 4.5 / Mono） |
-| ビルド TFM | `net45`（`Microsoft.NETFramework.ReferenceAssemblies.net45` により macOS / Linux / WSL の dotnet SDK でもビルドできる） |
+| ビルド TFM | §2.3 参照（`Microsoft.NETFramework.ReferenceAssemblies.net45` により macOS / Linux / WSL の dotnet SDK でもビルドできる） |
 | 実装形態 | TShock Plugin |
 | 責務 | World State / Chest State の Snapshot 作成、PHP への非同期送信、PHP が決定したゲーム内通知の表示 |
 | Backlog API | 呼ばない |
@@ -66,7 +66,19 @@ CACHE_STORE=array
 
 Terraria と TShock は対応バージョンが一致していることを起動・導入の前提とする。
 
-本節がリポジトリ全体の対応バージョンの**正本 (SSOT)** である。ここを変更した場合は `scripts/setup-tshock.sh` の `TSHOCK_VERSION` / `TERRARIA_VERSION`、`adapter/TerrariaBacklog.Adapter.csproj` の `TargetFramework` と `[ApiVersion]`、`contracts/terraria/<version>/items.json`、各 README を併せて更新する。
+本節がリポジトリ全体の対応バージョンの**正本 (SSOT)** である。更新対象の一覧も本節だけが持つ。各 README はこの一覧を再掲せず本節を参照すること（同じチェックリストを複数箇所に置くと粒度がずれて更新漏れを生む）。
+
+ここを変更した場合は、以下をすべて併せて更新する。
+
+- `scripts/setup-tshock.sh` の `TSHOCK_VERSION` / `TERRARIA_VERSION`
+- `adapter/TerrariaBacklog.Adapter.csproj` の `TargetFramework`
+- `adapter/TerrariaBacklogPlugin.cs` の `[ApiVersion]` と、`adapter/Tests/TerrariaBacklogPluginTests.cs` が検証する期待値
+- `adapter/Directory.Build.props` の参照アセンブリ存在チェック（配布物の構造が変わる場合）
+- `contracts/terraria/<version>/items.json`（ディレクトリ名と `terrariaVersion`）
+- `contracts/scripts/validate.js` の items catalog 参照パス
+- `contracts/examples/snapshot-v1.json` の `runtime.tshockVersion` / `runtime.terrariaVersion`
+- `scripts/deploy-adapter.sh` の TFM 依存パスと `Makefile` の起動コマンド
+- README（root / `adapter/` / `contracts/`）のバージョン表と手順
 
 | 項目 | 採用 | 備考 |
 | --- | --- | --- |
@@ -451,7 +463,7 @@ Adapter 設定には少なくとも次を持つ。
 
 TShock の `GetDataHandlers.ChestItemChange` を変更契機として利用する。
 
-Quick Stack は通常の Slot Change と別経路になる可能性がある（採用バージョンの TShock 4.3.13 には `OTAPI.dll` として独立した hook assembly は存在せず、Quick Stack は `Terraria.Main.QuickStackChests` / `QuickStackAllChests` 経由で複数 Chest をまとめて更新する）。このため Adapter は両方を「設定された Collection Chest の状態が汚れた可能性がある」という trigger として扱う。実際にどの hook を使うかは Task 08 で採用バージョンの API を確認して確定する。
+Quick Stack は通常の Slot Change と別経路になる可能性がある（採用バージョンの TShock 4.3.13 には `OTAPI.dll` として独立した hook assembly は存在せず、Quick Stack はネットワークパケット `Terraria.MessageID.QuickStackChests` と `Terraria.Main.QuickStackAllChests()` の経路で複数 Chest をまとめて更新する。前者は TShock の `GetDataHandlers` 経由で観測することになる）。このため Adapter は両方を「設定された Collection Chest の状態が汚れた可能性がある」という trigger として扱う。実際にどの hook を使うかは Task 08 で採用バージョンの API を確認して確定する。
 
 重要なのは、イベント引数の差分を Achievement とみなさないことである。
 
