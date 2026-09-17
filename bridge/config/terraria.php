@@ -16,13 +16,6 @@ declare(strict_types=1);
 return [
 
     /*
-     * Task 08 実機確認用の診断ログ。true にすると Snapshot の受信内容と
-     * Task 04 の評価結果 (boss / world / item) を構造化ログへ出す。
-     * Registry 保存や通知生成は行わない。Task 07 実装時に削除する。
-     */
-    'debug_log_achievements' => (bool) env('TERRARIA_DEBUG_LOG_ACHIEVEMENTS', false),
-
-    /*
     |--------------------------------------------------------------------------
     | Adapter Bearer Token (docs/design.md §6.1, §16.1)
     |--------------------------------------------------------------------------

@@ -12,6 +12,7 @@ use App\Domain\Mapping\MappingIssue;
 use App\Domain\Mapping\MappingRepository;
 use App\Domain\Snapshot\WorldKey;
 use App\Infrastructure\Backlog\Exceptions\BacklogApiException;
+use App\Infrastructure\Backlog\Support\WriteFailureClassifier;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
@@ -269,7 +270,7 @@ final class BacklogMappingRepository implements MappingRepository
     ): CompletionResult {
         $detail = $this->client->redact($exception->getMessage());
 
-        if ($this->isDefiniteWriteFailure($exception)) {
+        if (WriteFailureClassifier::isDefinite($exception)) {
             return $this->fail($mapping, CompletionFailureReason::WriteFailed, '課題の完了更新に失敗した: '.$detail);
         }
 
@@ -279,21 +280,6 @@ final class BacklogMappingRepository implements MappingRepository
             CompletionFailureReason::WriteResultUnknown,
             '課題の完了更新の結果が不明で、再取得でも完了を確認できなかった: '.$detail,
         );
-    }
-
-    /**
-     * 「更新が確定的に失敗した」と言い切れる例外か (docs/design.md §13.4)。
-     *
-     * BacklogRegistryRepository と同じ基準。4xx は Backlog が要求を拒否しており
-     * PATCH は適用されていない。一方、HTTP status を持たない失敗や 2xx 受信後の
-     * payload 解釈失敗 (`backlog.unexpected_payload`) は「書けたか不明」側であり、
-     * 再取得で確認すべき。status の有無で区別し、不明側は保守的に再取得へ倒す。
-     */
-    private function isDefiniteWriteFailure(BacklogApiException $exception): bool
-    {
-        $status = $exception->status();
-
-        return ! $exception->isRetriable() && $status !== null && $status >= 400;
     }
 
     /**

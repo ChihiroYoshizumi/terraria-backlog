@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Domain\Snapshot\SnapshotOutcome;
 use App\Domain\Snapshot\SnapshotProcessor;
 use App\Domain\Snapshot\SnapshotRejectedException;
 use App\Domain\Snapshot\SnapshotRequestParser;
@@ -57,6 +58,24 @@ final class SnapshotController extends Controller
         $this->logInvalidItems($snapshot);
 
         $result = $processor->process($snapshot);
+
+        // docs/design.md §15.3 / §18.2: 再照合を完了できず返せる通知も無い場合は
+        // 「再試行可能な非成功応答」を返す。Adapter はこれで復旧待ちフラグを立て、
+        // 次の periodic / manual に recoveryPending を付けて再送する (§15.2)。
+        // 成功 ACK を 200 で捏造しない (AC-09)。
+        if ($result->outcome === SnapshotOutcome::RetriableFailure) {
+            Log::warning('snapshot.retry_later', [
+                ...$snapshot->logContext(),
+                'result' => $result->outcome->value,
+            ]);
+
+            return new JsonResponse([
+                'error' => [
+                    'code' => 'reconciliation.retry_later',
+                    'message' => 'Snapshot の再照合を完了できなかった。次の reconciliation で再試行する。',
+                ],
+            ], $result->httpStatus());
+        }
 
         // docs/design.md §6.5 / contracts/snapshot-response-v1.schema.json:
         // notification-only。Achievement Key / Registry 結果 / Backlog Issue Key /

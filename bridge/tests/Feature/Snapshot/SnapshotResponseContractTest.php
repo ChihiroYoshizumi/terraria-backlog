@@ -36,9 +36,13 @@ final class SnapshotResponseContractTest extends SnapshotTestCase
     }
 
     #[Test]
-    public function the_stub_application_layer_returns_no_notifications(): void
+    public function an_application_layer_without_notifications_returns_an_empty_array(): void
     {
-        // Task 02 時点では Application 処理は no-op (tasks/02 §5)。
+        // 通知が不要な Snapshot では notifications は空配列 (docs/design.md §6.5)。
+        // Task 07 以降の既定 processor は ProcessWorldSnapshot だが、ここで見たいのは
+        // controller の envelope だけなので Application 層は差し替える。
+        $this->recordProcessor();
+
         $this->postSnapshot(SnapshotPayload::valid())
             ->assertOk()
             ->assertExactJson([
