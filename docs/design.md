@@ -1,7 +1,7 @@
 # Terraria × Backlog ワールド進捗管理システム 詳細設計
 
 状態: draft  
-更新日: 2026-09-16
+更新日: 2026-09-17
 
 本書は [最上位仕様](spec.md) と [機能仕様](specs/README.md) を入力とする design 文書である。仕様で定義された振る舞いを変更せず、実装に必要な技術選定、責務分割、通信契約、Backlog 上の論理データモデル、再照合方式、エラー処理、テスト方針を確定する。
 
@@ -54,7 +54,8 @@ CACHE_STORE=array
 | 項目 | 採用 |
 | --- | --- |
 | 言語 | C# |
-| Runtime | 採用 TShock が要求する .NET Runtime |
+| Runtime | 採用 TShock が要求する .NET Runtime（§2.3: .NET Framework 4.5 / Mono） |
+| ビルド TFM | §2.3 参照（`Microsoft.NETFramework.ReferenceAssemblies.net45` により macOS / Linux / WSL の dotnet SDK でもビルドできる） |
 | 実装形態 | TShock Plugin |
 | 責務 | World State / Chest State の Snapshot 作成、PHP への非同期送信、PHP が決定したゲーム内通知の表示 |
 | Backlog API | 呼ばない |
@@ -65,7 +66,33 @@ CACHE_STORE=array
 
 Terraria と TShock は対応バージョンが一致していることを起動・導入の前提とする。
 
-2026-09-16 時点では Terraria Desktop の最新リリースと TShock stable の対応 Terraria バージョンに差があるため、設計上「最新 Terraria なら必ず動作する」とは扱わない。
+本節がリポジトリ全体の対応バージョンの**正本 (SSOT)** である。更新対象の一覧も本節だけが持つ。各 README はこの一覧を再掲せず本節を参照すること（同じチェックリストを複数箇所に置くと粒度がずれて更新漏れを生む）。
+
+ここを変更した場合は、以下をすべて併せて更新する。
+
+- `scripts/setup-tshock.sh` の `TSHOCK_VERSION` / `TERRARIA_VERSION`
+- `adapter/TerrariaBacklog.Adapter.csproj` の `TargetFramework`
+- `adapter/TerrariaBacklogPlugin.cs` の `[ApiVersion]` と、`adapter/Tests/TerrariaBacklogPluginTests.cs` が検証する期待値
+- `adapter/Directory.Build.props` の参照アセンブリ存在チェック（配布物の構造が変わる場合）
+- `contracts/terraria/<version>/items.json`（ディレクトリ名と `terrariaVersion`）
+- `contracts/scripts/validate.js` の items catalog 参照パス
+- `contracts/examples/snapshot-v1.json` の `runtime.tshockVersion` / `runtime.terrariaVersion`
+- `scripts/deploy-adapter.sh` の TFM 依存パスと `Makefile` の起動コマンド
+- README（root / `adapter/` / `contracts/`）のバージョン表と手順
+
+| 項目 | 採用 | 備考 |
+| --- | --- | --- |
+| Terraria | 1.3.0.8 | プレイヤーが Steam の「以前のバージョン」から選択できる版に合わせた（後述） |
+| TShock | 4.3.13 | 1.3.0.8 に対応する最終リリース（2016-05-16） |
+| TShock 配布アセット | `tshock_4.3.13.zip` | OS 別ビルドはなく単一 zip。トップレベルに `TerrariaServer.exe`、`ServerPlugins/` に TShockAPI 等が入る |
+| Adapter のビルド TFM | `net45` (.NET Framework 4.5) | `TerrariaServer.exe` / `TShockAPI.dll` がともに `.NETFramework,Version=v4.5` ターゲット |
+| Adapter のコンパイル参照 | `TerrariaServer.exe`, `ServerPlugins/TShockAPI.dll` | この版に `OTAPI.dll` や `bin/` は存在しない。`TerrariaApi.Server`（`TerrariaPlugin` / `ApiVersionAttribute`）と `Terraria.Main` はいずれも `TerrariaServer.exe` に内包される |
+| Server API バージョン | `[ApiVersion(1, 22)]` | TShock 4.3.13 本体の宣言値。Plugin 側が一致しないとロード時互換性チェックで弾かれる |
+| サーバー実行 | `mono TerrariaServer.exe` | macOS / Linux / WSL では Mono が必要。`TShock.Server` という実行ファイルは存在しない |
+
+**1.3.0.8 を採用する理由:** Terraria 最新版 (1.4.5.6) と TShock 6.1.0 の組み合わせでは、Steam クライアント側で当該バージョンを選択できずサーバーとクライアントのバージョンを揃えられなかった。Steam の Betas から選択可能な 1.3.0.8 であればクライアント・サーバー双方を確実に一致させられるため、対応バージョンを 1.3.0.8 / TShock 4.3.13 へ引き下げる。AC-01（Vanilla クライアントが MOD なしで接続できる）は 1.3.0.8 でも同様に満たせる。
+
+最新 Terraria Desktop と TShock stable の対応 Terraria バージョンには常に差があるため、設計上「最新 Terraria なら必ず動作する」とは扱わない。
 
 MVP では次の3段階で fail closed にする。
 
@@ -79,8 +106,8 @@ Snapshot で送る例:
 {
   "runtime": {
     "adapterVersion": "0.1.0",
-    "tshockVersion": "6.1.0",
-    "terrariaVersion": "1.4.5.6"
+    "tshockVersion": "4.3.13",
+    "terrariaVersion": "1.3.0.8"
   }
 }
 ```
@@ -88,12 +115,12 @@ Snapshot で送る例:
 PHP 設定例:
 
 ```env
-TERRARIA_SUPPORTED_RUNTIME=6.1.0:1.4.5.6
+TERRARIA_SUPPORTED_RUNTIME=4.3.13:1.3.0.8
 ```
 
 `php artisan terraria:doctor` はこの設定が空でないこと、実装が認識する組み合わせであることを検証する。実際のサーバー runtime は Adapter 起動 Gate と各 Snapshot の runtime validation で検証する。
 
-未対応の組み合わせでは運用を開始しない。将来 TShock stable が新しい Terraria バージョンへ対応したら、Adapter のビルドと Smoke Test を通した上で `SupportedVersionMatrix` と PHP 設定を更新する。
+未対応の組み合わせでは運用を開始しない。将来より新しい Terraria / TShock の組み合わせへ移行する場合は、Adapter のビルドと Smoke Test を通した上で `SupportedVersionMatrix` と PHP 設定を更新する。
 
 参考:
 
@@ -275,8 +302,8 @@ Adapter Token は Backlog API Key と別の秘密情報とする。
   "observedAt": "2026-09-16T10:00:00+09:00",
   "runtime": {
     "adapterVersion": "0.1.0",
-    "tshockVersion": "6.1.0",
-    "terrariaVersion": "1.4.5.6"
+    "tshockVersion": "4.3.13",
+    "terrariaVersion": "1.3.0.8"
   },
   "world": {
     "key": "terraria:123456789",
@@ -436,7 +463,7 @@ Adapter 設定には少なくとも次を持つ。
 
 TShock の `GetDataHandlers.ChestItemChange` を変更契機として利用する。
 
-Quick Stack は通常の Slot Change と別経路になる可能性があり、TShock 本体でも `OTAPI.Hooks.Chest.QuickStack` が別途扱われている。このため Adapter は両方を「設定された Collection Chest の状態が汚れた可能性がある」という trigger として扱う。
+Quick Stack は通常の Slot Change と別経路になる可能性がある（採用バージョンの TShock 4.3.13 には `OTAPI.dll` として独立した hook assembly は存在せず、Quick Stack はネットワークパケット `Terraria.MessageID.QuickStackChests` と `Terraria.Main.QuickStackAllChests()` の経路で複数 Chest をまとめて更新する。前者は TShock の `GetDataHandlers` 経由で観測することになる）。このため Adapter は両方を「設定された Collection Chest の状態が汚れた可能性がある」という trigger として扱う。実際にどの hook を使うかは Task 08 で採用バージョンの API を確認して確定する。
 
 重要なのは、イベント引数の差分を Achievement とみなさないことである。
 

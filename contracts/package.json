@@ -1,0 +1,13 @@
+{
+  "name": "terraria-backlog-contracts",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Adapter <-> Bridge の shared contract schema/example と検証コマンド (Task 01)",
+  "scripts": {
+    "validate": "node scripts/validate.js"
+  },
+  "devDependencies": {
+    "ajv": "^8.18.0",
+    "ajv-formats": "^3.0.1"
+  }
+}

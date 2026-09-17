@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "requestId": "0199f136-9e36-7f41-b148-e5b4f384a321",
+  "reason": "collection_change",
+  "observedAt": "2026-09-16T10:00:00+09:00",
+  "runtime": {
+    "adapterVersion": "0.1.0",
+    "tshockVersion": "4.3.13",
+    "terrariaVersion": "1.3.0.8"
+  },
+  "world": {
+    "key": "terraria:123456789",
+    "terrariaWorldId": 123456789,
+    "name": "Fusic World"
+  },
+  "collectionChestName": "BACKLOG_COLLECTION",
+  "flags": {
+    "downedBoss1": true,
+    "downedBoss3": true,
+    "hardMode": false,
+    "downedMechBoss1": false,
+    "downedMechBoss2": false,
+    "downedMechBoss3": false,
+    "downedPlantBoss": false,
+    "downedGolemBoss": false,
+    "downedAncientCultist": false,
+    "downedMoonlord": false
+  },
+  "collectionChests": [
+    {
+      "x": 120,
+      "y": 340,
+      "name": "BACKLOG_COLLECTION",
+      "items": [
+        {
+          "type": 1326,
+          "stack": 1,
+          "name": "Rod of Discord"
+        }
+      ]
+    }
+  ],
+  "trigger": {
+    "playerNames": ["player1"]
+  }
+}

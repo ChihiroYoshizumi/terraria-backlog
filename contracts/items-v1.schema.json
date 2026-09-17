@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://terraria-backlog.example/contracts/items-v1.schema.json",
+  "title": "Terraria version-pinned Item catalog v1",
+  "description": "docs/design.md §4 / §6.4。contracts/terraria/<version>/items.json の形式。PHP の Item-level validation (type が catalog に存在し、stack が 1..maxStack の範囲内) がこのカタログを参照する。Task 04 で実データを拡充する。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["terrariaVersion", "items"],
+  "properties": {
+    "terrariaVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "maxStack"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Terraria native Item.type"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxStack": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "uniqueItems": true
+    }
+  }
+}

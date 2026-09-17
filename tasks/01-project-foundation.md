@@ -139,3 +139,30 @@ README または各ディレクトリの README に、最低限以下を記載�
 - Vanilla Terraria クライアントから、その TShock Server に接続できる。
 - AC-01/02 を阻害する Client MOD 依存や専用 DB 依存が入っていない。
 - 正本と矛盾する判断が必要になった場合は実装せず spec/design issue として報告する。
+
+## 実装状況
+
+- status: completed（実装・自動確認・実機 Smoke Test をすべて完了）
+- 対応バージョン: **Terraria 1.3.0.8 / TShock 4.3.13**（正本は `docs/design.md` §2.3）
+- 実施日: 2026-09-17（同日に対応バージョンを Terraria 1.4.5.6 / TShock 6.1.0 から **Terraria 1.3.0.8 / TShock 4.3.13** へ変更。理由と対応表は `docs/design.md` §2.3）
+- 実施内容:
+  - `bridge/`: Laravel 13 / PHP 8.5, DB 非依存 (QUEUE_CONNECTION=sync / SESSION_DRIVER=array / CACHE_STORE=array)。`app/Domain`, `app/Application`, `app/Infrastructure/Backlog` を新設。`composer test` が DB_* 未設定でも成功することを確認済み。
+  - `adapter/`: `TerrariaBacklog.Adapter.csproj` (`net45` / .NET Framework 4.5、TShock 4.3.13 の TargetFramework に合わせた)。参照は `TerrariaServer.exe` と `ServerPlugins/TShockAPI.dll` の2つ（この版に `OTAPI.dll` / `bin/` は無い）。`Microsoft.NETFramework.ReferenceAssemblies.net45` により macOS / Linux / WSL でも dotnet SDK だけでビルドできる。`TerrariaBacklogPlugin` は no-op（ロード時ログのみ）で `[ApiVersion(1, 22)]` を宣言する。`adapter/Tests` は net9.0 のまま `System.Reflection.MetadataLoadContext` でビルド済み net45 アセンブリのメタデータを読み、Plugin 契約 (ApiVersion の値が 1.22 であること・TerrariaPlugin 継承・コンストラクタ形状・Initialize/Dispose(bool) の override) と Achievement/Backlog 概念が漏れていないことを検証（5 tests, 全て pass）。`dotnet build` 成功を確認済み。
+  - `contracts/`: `snapshot-v1.schema.json`（request）、`snapshot-response-v1.schema.json`（response, notification-only, additionalProperties:false）、`items-v1.schema.json`、`terraria/1.3.0.8/items.json`（プレースホルダー3件、Task 04 で拡張予定）。`npm run validate` で example が schema に適合し、response に禁止 field が無いことを確認済み。
+  - `scripts/setup-tshock.sh` / `scripts/deploy-adapter.sh`: TShock 4.3.13 (for Terraria 1.3.0.8) の取得・展開・Adapter デプロイを自動化。TShock 4.3.13 は OS 別ビルドが無く単一 zip (`tshock_4.3.13.zip`) のため、OS 判定と `.tar` 展開分岐は削除した。実際に実行し、`.tshock-server/` への展開と `ServerPlugins/` への Plugin DLL 配置まで確認済み（gitignore 済み、コミットなし）。
+  - README: root / `bridge/README.md` / `adapter/README.md` / `contracts/README.md` に install/test/build/deploy/validate コマンドと TShock 起動手順を記載。
+- 実機 Smoke Test（実施済み・全項目成功）: 実機を持つ開発者が `adapter/README.md`「手動 Smoke Test」の手順で実施した。
+  - 使用構成: Terraria **1.3.0.8** Vanilla client（Steam の Betas から 1.3.0.8 を選択） + TShock **4.3.13** Dedicated Server。
+  - TShock 4.3.13 Dedicated Server がローカルで起動することを確認。
+  - `TerrariaBacklog.Adapter` Plugin が Plugin としてロードされることをコンソールログで確認。
+  - World がロードされ、サーバーが接続待ち状態になることを確認。
+  - Vanilla Terraria 1.3.0.8 client から TShock Server へ接続成功。
+  - **client 側に tModLoader / 専用 client MOD は不要**であることを確認（AC-01 の Vanilla client 接続要件を満たす）。
+  - この結果により「完了条件」の TShock Dedicated Server 起動・Vanilla client 接続・Client MOD 非依存をすべて満たした。
+- 自動確認（実施済み・全て成功）:
+  - `composer test`（bridge, DB 無し）
+  - `dotnet build adapter/TerrariaBacklog.Adapter.csproj`
+  - `dotnet test adapter/Tests/TerrariaBacklog.Adapter.Tests.csproj`
+  - `npm run validate`（contracts）
+- spec/design との矛盾: なし。対応バージョンの引き下げは `docs/design.md` §2.3（正本）を更新して反映済み。`docs/spec.md` はバージョンを具体値で固定していない（「採用バージョン」表記）ため変更不要。
+- PR: https://github.com/ChihiroYoshizumi/terraria-backlog/pull/15

@@ -89,15 +89,25 @@ README または専用 docs に、AC-01〜AC-19 それぞれについて以下�
 値は実環境から取得し、ドキュメント例を固定値として使わない。
 
 ### 8. Terraria/TShock compatibility と Smoke Test 手順を書く
-- 対応 Terraria version
-- 対応 TShock version
+
+MVP の対応バージョンは次で固定する（正本は `docs/design.md` §2.3）。
+
+- 対応 Terraria version: **1.3.0.8**
+- 対応 TShock version: **4.3.13**
+- client は **Vanilla Terraria 1.3.0.8**。tModLoader / 専用 client MOD は要求しない。
+
+記載すること:
+- 上記バージョンと、client 側で 1.3.0.8 を選ぶ手順
 - SupportedVersionMatrix 更新方法
 - 実 server で plugin load 成功確認
-- Vanilla client 接続
-- Collection Chest 変更
-- Quick Stack
+- Vanilla client 接続確認
+- Collection Chest 変更の実機確認: **drag / shift / quick stack の3経路すべて**
+- 上記3経路それぞれで `collection_change` の player attribution（`trigger.playerNames`）が期待どおりになることの確認。取得できない経路がある場合は、その経路と理由を明記する（推測値で埋めない）
 - world progression
 - startup/periodic/manual sync
+
+運用範囲の前提:
+- MVP は**ローカル利用前提**とする。TShock Server を public Internet へ公開することは対象外であり、公開運用向けの手順（port forwarding、外部公開時の認証・DDoS・アカウント保護等）は本 Task の範囲に含めない。
 
 ### 9. Manual Acceptance 手順を作る
 実 `TRAINING_YOSHIZUMI` を使う手動試験を、既存研修課題を壊さないよう専用 Test Issue / Mapping 前提で手順化する。

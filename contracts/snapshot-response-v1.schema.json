@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://terraria-backlog.example/contracts/snapshot-response-v1.schema.json",
+  "title": "Terraria Backlog Bridge Snapshot Response v1",
+  "description": "docs/design.md §6.5。Adapter には requestId / worldKey / notifications のみを返す。Achievement Key・Backlog Issue Key・Registry 結果・Mapping 結果は含めない。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requestId", "worldKey", "notifications"],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "worldKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "notifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["audience", "message"],
+        "properties": {
+          "audience": {
+            "type": "string",
+            "enum": ["players", "server"],
+            "description": "server は server console のみ。ゲーム内全体チャットには表示しない。"
+          },
+          "playerNames": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "audience=players の場合の宛先。audience=server の場合は含めない。"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "audience": { "const": "server" } },
+              "required": ["audience"]
+            },
+            "then": { "not": { "required": ["playerNames"] } }
+          },
+          {
+            "if": {
+              "properties": { "audience": { "const": "players" } },
+              "required": ["audience"]
+            },
+            "then": { "required": ["playerNames"] }
+          }
+        ]
+      }
+    }
+  }
+}

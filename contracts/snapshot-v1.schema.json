@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://terraria-backlog.example/contracts/snapshot-v1.schema.json",
+  "title": "Terraria Backlog Adapter Snapshot Request v1",
+  "description": "docs/design.md §6.2 の Adapter -> PHP Snapshot request envelope. この schema は「リクエスト全体を拒否する validation」(§6.4) のうち、JSON の構造レベルで検証可能なものだけを表現する。Item 単位で無視する validation（catalog 照合・stack 上限等）は PHP の Application 層が担う。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "reason",
+    "observedAt",
+    "runtime",
+    "world",
+    "collectionChestName",
+    "flags",
+    "collectionChests"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "未知の schemaVersion は reject する。"
+    },
+    "requestId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reason": {
+      "type": "string",
+      "enum": ["startup", "periodic", "collection_change", "world_change", "manual"],
+      "description": "§6.3。達成判定は reason に依存させない。"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "recoveryPending": {
+      "type": "boolean",
+      "description": "指定されているが JSON boolean でない場合は reject。"
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["adapterVersion", "tshockVersion", "terrariaVersion"],
+      "properties": {
+        "adapterVersion": { "type": "string", "minLength": 1 },
+        "tshockVersion": { "type": "string", "minLength": 1 },
+        "terrariaVersion": { "type": "string", "minLength": 1 }
+      }
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["key", "terrariaWorldId"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "terrariaWorldId": { "type": "integer" },
+        "name": { "type": "string" }
+      }
+    },
+    "collectionChestName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "flags": {
+      "type": "object",
+      "description": "World 進捗フラグ。キー名は対応 Terraria バージョン (docs/design.md §2.3) の Terraria.NPC / Terraria.Main のフィールド名に対応する（例: downedBoss1, hardMode, downedMechBoss1, downedPlantBoss, downedGolemBoss, downedAncientCultist, downedMoonlord）。対応バージョンを変更する場合はフラグの実在を確認する。",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "collectionChests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["x", "y", "name", "items"],
+        "properties": {
+          "x": { "type": "integer" },
+          "y": { "type": "integer" },
+          "name": { "type": "string" },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Item 単位の型/stack/catalog 照合は PHP の Item-level validation が担う（§6.4）。ここでは object であることのみを要求する。"
+            }
+          }
+        }
+      }
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "playerNames": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
