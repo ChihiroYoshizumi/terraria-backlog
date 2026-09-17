@@ -1,0 +1,20 @@
+{
+  "terrariaVersion": "1.4.5.6",
+  "items": [
+    {
+      "id": 2,
+      "name": "Dirt Block",
+      "maxStack": 999
+    },
+    {
+      "id": 3,
+      "name": "Stone Block",
+      "maxStack": 999
+    },
+    {
+      "id": 1326,
+      "name": "Rod of Discord",
+      "maxStack": 1
+    }
+  ]
+}

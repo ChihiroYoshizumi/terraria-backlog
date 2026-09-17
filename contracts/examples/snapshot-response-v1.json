@@ -1,0 +1,11 @@
+{
+  "requestId": "0199f136-9e36-7f41-b148-e5b4f384a321",
+  "worldKey": "terraria:123456789",
+  "notifications": [
+    {
+      "audience": "players",
+      "playerNames": ["player1"],
+      "message": "[Backlog] Rod of Discord を登録しました。取り出してOKです。"
+    }
+  ]
+}

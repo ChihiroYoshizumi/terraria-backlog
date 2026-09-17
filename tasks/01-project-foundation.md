@@ -139,3 +139,22 @@ README または各ディレクトリの README に、最低限以下を記載�
 - Vanilla Terraria クライアントから、その TShock Server に接続できる。
 - AC-01/02 を阻害する Client MOD 依存や専用 DB 依存が入っていない。
 - 正本と矛盾する判断が必要になった場合は実装せず spec/design issue として報告する。
+
+## 実装状況
+
+- status: completed
+- 実施日: 2026-09-17
+- 実施内容:
+  - `bridge/`: Laravel 13 / PHP 8.5, DB 非依存 (QUEUE_CONNECTION=sync / SESSION_DRIVER=array / CACHE_STORE=array)。`app/Domain`, `app/Application`, `app/Infrastructure/Backlog` を新設。`composer test` が DB_* 未設定でも成功することを確認済み。
+  - `adapter/`: `TerrariaBacklog.Adapter.csproj` (net9.0, TShock 6.1.0 の TargetFramework に合わせた)。`TerrariaBacklogPlugin` は no-op（ロード時ログのみ）。`adapter/Tests` の xUnit プロジェクトはリフレクションで Plugin 契約 (ApiVersion 属性・TerrariaPlugin 継承・コンストラクタ形状) と Achievement/Backlog 概念が漏れていないことを検証（5 tests, 全て pass）。`dotnet build` 成功を確認済み。
+  - `contracts/`: `snapshot-v1.schema.json`（request）、`snapshot-response-v1.schema.json`（response, notification-only, additionalProperties:false）、`items-v1.schema.json`、`terraria/1.4.5.6/items.json`（プレースホルダー3件、Task 04 で拡張予定）。`npm run validate` で example が schema に適合し、response に禁止 field が無いことを確認済み。
+  - `scripts/setup-tshock.sh` / `scripts/deploy-adapter.sh`: TShock 6.1.0 (for Terraria 1.4.5.6) の取得・展開・Adapter デプロイを自動化。実際に実行し、`.tshock-server/` への展開と `ServerPlugins/` への Plugin DLL 配置まで確認済み（gitignore 済み、コミットなし）。
+  - README: root / `bridge/README.md` / `adapter/README.md` / `contracts/README.md` に install/test/build/deploy/validate コマンドと TShock 起動手順を記載。
+- 実機検証: **未実施**。本タスクの実行環境には Terraria クライアント・GUI が無いため、TShock Dedicated Server の実起動・コンソールでの Plugin ロード確認・Vanilla クライアントからの接続確認は行っていない。手順は `adapter/README.md` の「手動 Smoke Test」に再現可能な形で記載し、開発者が実施できるようにした。
+- 自動確認（実施済み・全て成功）:
+  - `composer test`（bridge, DB 無し）
+  - `dotnet build adapter/TerrariaBacklog.Adapter.csproj`
+  - `dotnet test adapter/Tests/TerrariaBacklog.Adapter.Tests.csproj`
+  - `npm run validate`（contracts）
+- spec/design との矛盾: なし。
+- PR: (この PR で作成。マージ後に番号を追記)

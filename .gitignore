@@ -1,0 +1,20 @@
+# --- TShock / Terraria distributables and runtime state ---
+# scripts/setup-tshock.sh が展開する TShock 本体、および同梱の world save / server log 等。
+# 配布物・生成物はコミットしない。
+/.tshock-server/
+/.tshock-cache/
+
+# --- .NET / C# (adapter/) ---
+adapter/**/bin/
+adapter/**/obj/
+adapter/**/*.user
+
+# --- PHP / Laravel (bridge/) ---
+# bridge/ 配下は Laravel 標準の bridge/.gitignore (vendor, .env, storage/* 等) に従う。
+
+# --- Node (contracts/) ---
+contracts/node_modules/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
