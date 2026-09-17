@@ -3,6 +3,8 @@
 ## 目的
 後続 Task が同じ構造・同じ境界仕様を前提に実装できるよう、Laravel Bridge / C# Adapter / shared contract の最小構成を作る。
 
+加えて、この Task の完了時点で「TShock Dedicated Server がローカルで起動し、TerrariaBacklog Adapter Plugin が読み込まれ、Vanilla Terraria クライアントから接続できる」状態まで到達する。
+
 ## 依存関係
 なし。最初に実施する。
 
@@ -54,7 +56,9 @@ adapter/Transport/
 adapter/Tests/
 ```
 
-この Task では TShock hook / HTTP sender / Achievement 判定は実装しない。
+- TShock が Plugin として認識できる最小の Plugin class を実装する。
+- Plugin の初期化時に、ロードされたことが分かる最小限のログを出してよい。
+- この Task では gameplay hook / snapshot 生成 / HTTP sender / Achievement 判定は実装しない。
 
 ### 4. shared contract を作る
 `contracts/` に以下を作成する。
@@ -77,27 +81,61 @@ README または各ディレクトリの README に、最低限以下を記載�
 - Adapter build / test command
 - contract validation command
 
+### 6. ローカルで TShock Dedicated Server を起動できるようにする
+この Task で、開発者が実際に Terraria Server を起動して Plugin のロード確認までできるようにする。
+
+実施内容:
+- `docs/design.md` が対象とする Terraria / TShock の対応バージョンを固定する。
+- TShock Dedicated Server の取得・配置・起動手順を README 等に記載する。
+- `adapter/` の build output から Plugin DLL を TShock の `ServerPlugins` に配置する手順を記載する。
+- 可能であれば build/deploy を 1 コマンドで行える script または Make target 等を用意する。
+- TShock Dedicated Server を起動し、コンソール上で `TerrariaBacklog.Adapter` が正常にロードされることを確認する。
+- この段階の Plugin は no-op でよい。起動時ロード確認以外の機能は不要。
+- 開発用 World を作成または読み込み、サーバーが join 待ち状態まで到達することを確認する。
+- 同一対応バージョンの Vanilla Terraria クライアントからサーバーへ接続できることを確認する。
+- Client 側に tModLoader や専用 MOD を要求しない。
+
+リポジトリには TShock 本体や Terraria の配布物をコミットしない。取得物・生成 World・server logs・runtime config など、Git 管理すべきでないファイルは `.gitignore` へ追加する。
+
 ## 想定変更ファイル
 - `bridge/**`
 - `adapter/**`
 - `contracts/**`
-- 必要なら root README / CI 設定
+- root README / adapter README
+- 必要に応じて local setup script / Makefile 等
+- `.gitignore`
+- 必要なら CI 設定
 
 ## 実装しないこと
 - Backlog API 接続
 - Snapshot endpoint の実処理
 - Achievement 判定
-- TShock hook
+- gameplay/world/chest 用 TShock hook
+- Snapshot の HTTP 送信
 - DB / Redis / 永続 Queue / Outbox
 
 ## テスト・確認
+### 自動確認
 - Bridge の test command が DB 無しで成功する。
 - Adapter の unit test project が起動する。
+- Adapter Plugin が build できる。
 - `snapshot-v1.schema.json` に example request が適合する。
 - example response が notification-only contract になっている。
 - Adapter 側に Achievement Key / Backlog Issue Key 用の型や定数を作っていない。
 
+### 手動 Smoke Test
+以下を Task 01 の完了確認として実施し、README に再現手順を残す。
+
+1. TShock Dedicated Server を起動する。
+2. `TerrariaBacklog.Adapter.dll` が Plugin としてロードされることをコンソールログで確認する。
+3. World がロードされ、サーバーが接続待ち状態になることを確認する。
+4. Vanilla Terraria クライアントから接続する。
+5. クライアントに tModLoader / 専用 MOD が不要であることを確認する。
+
 ## 完了条件
 - `bridge/`, `adapter/`, `contracts/` が後続 Task の実装先として使える。
+- Adapter Plugin の DLL を作成して TShock に読み込ませられる。
+- ローカルで TShock Dedicated Server が起動する。
+- Vanilla Terraria クライアントから、その TShock Server に接続できる。
 - AC-01/02 を阻害する Client MOD 依存や専用 DB 依存が入っていない。
 - 正本と矛盾する判断が必要になった場合は実装せず spec/design issue として報告する。
